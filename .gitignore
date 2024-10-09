@@ -1,0 +1,5 @@
+# Ignore all files starting with ._
+._*
+
+# Ignore all files with .pth extension
+*.pth
