@@ -9,3 +9,6 @@ datasets/*
 
 # Exclude the datasets directory itself so it is still tracked
 !datasets/
+
+# Ignore .DS_Store files
+.DS_Store
