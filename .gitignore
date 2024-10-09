@@ -3,3 +3,9 @@
 
 # Ignore all files with .pth extension
 *.pth
+
+# Ignore everything in the datasets directory
+datasets/*
+
+# Exclude the datasets directory itself so it is still tracked
+!datasets/
