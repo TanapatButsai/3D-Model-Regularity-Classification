@@ -3,9 +3,10 @@ import pandas as pd
 from pytorch3d.io import load_objs_as_meshes
 
 # Configuration
-file_path = 'data/label/3D-FUTURE-Layout.xlsx'  # Replace with your file path
-base_dir = 'data/3D-FUTURE-model'  # Set the base directory for your 3D models
-output_file_path = 'data/label/Final_Validated_Regularity_Levels.xlsx'
+file_path = 'datasets/3d-future-dataset/label/3D-FUTURE-Layout.xlsx'  # Replace with your file path
+output_file_path = 'datasets/3d-future-dataset/label/Final_Validated_Regularity_Levels.xlsx'
+
+base_dir = 'datasets/3d-future-dataset/3D-FUTURE-model'  # Set the base directory for your 3D models
 
 # Step 1: Load and Clean the Labels Data
 labels_df = pd.read_excel(file_path)

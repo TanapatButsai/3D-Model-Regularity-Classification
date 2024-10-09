@@ -2,7 +2,7 @@ import os
 import pandas as pd
 
 # Specify the path to the folder where you want to count subfolders
-base_folder = 'data/3D-FUTURE-model'  # Replace with your folder path
+base_folder = 'datasets/3d-future-dataset/3D-FUTURE-model'  # Replace with your folder path
 
 # Count the number of subfolders in the specified folder
 folder_count = len([entry for entry in os.listdir(base_folder) if os.path.isdir(os.path.join(base_folder, entry))])
@@ -11,8 +11,8 @@ folder_count = len([entry for entry in os.listdir(base_folder) if os.path.isdir(
 print(f'The number of folders in "{base_folder}" is: {folder_count}')
 
 # Configuration
-ori_file_path = 'data/label/3D-FUTURE-Layout.xlsx'  # Replace with your file path
-final_path = 'data/label/Final_Validated_Regularity_Levels.xlsx'
+ori_file_path = 'datasets/3d-future-dataset/label/Final_Regularity_Levels.xlsx'  # Replace with your file path
+final_path = 'datasets/3d-future-dataset/label/Final_Validated_Regularity_Levels.xlsx'
 
 # Step 1: Load and Clean the Labels Data
 ori_labels_df = pd.read_excel(ori_file_path)

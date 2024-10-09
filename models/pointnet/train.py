@@ -9,7 +9,7 @@ from model import PointNet
 import time
 
 # Configuration
-MAX_DATA_POINTS = 5000
+MAX_DATA_POINTS = 200
 num_epochs = 50
 batch_size = 32
 learning_rate = 0

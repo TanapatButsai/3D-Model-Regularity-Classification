@@ -12,3 +12,10 @@ datasets/*
 
 # Ignore .DS_Store files
 .DS_Store
+
+# Ignore all __pycache__ directories
+__pycache__/
+
+
+# Ignore __pycache__ in models/pointnet directory
+models/pointnet/__pycache__/
