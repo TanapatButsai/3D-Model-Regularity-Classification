@@ -9,7 +9,7 @@ from model import PointNet
 import time
 
 # Configuration
-MAX_DATA_POINTS = 200
+MAX_DATA_POINTS = 5000
 num_epochs = 50
 batch_size = 32
 learning_rate = 0
@@ -31,7 +31,7 @@ train_labels_df = labels_df.iloc[:train_size]
 val_labels_df = labels_df.iloc[train_size:]
 
 # Step 4: Create datasets and data loaders
-base_dir = 'datasets/3d-future-dataset/3D-FUTURE-model'
+base_dir = '/Volumes/MMFD/obj'
 train_dataset = MeshDataset(base_dir=base_dir, labels_df=train_labels_df, augment=True)
 val_dataset = MeshDataset(base_dir=base_dir, labels_df=val_labels_df, augment=False)
 train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True)

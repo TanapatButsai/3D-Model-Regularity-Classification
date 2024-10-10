@@ -6,9 +6,10 @@ from pytorch3d.io import load_objs_as_meshes
 file_path = 'datasets/3d-future-dataset/label/3D-FUTURE-Layout.xlsx'  # Replace with your file path
 output_file_path = 'datasets/3d-future-dataset/label/Final_Validated_Regularity_Levels.xlsx'
 
-base_dir = 'datasets/3d-future-dataset/3D-FUTURE-model'  # Set the base directory for your 3D models
+base_dir = '/Volumes/MMFD/obj'  # Set the base directory for your 3D models
 
 # Step 1: Load and Clean the Labels Data
+print("Step 1")
 labels_df = pd.read_excel(file_path)
 print(f"Initial number of data points: {len(labels_df)}")
 
@@ -33,12 +34,16 @@ def determine_final_level(row):
 labels_df['Final Regularity Level'] = labels_df.apply(determine_final_level, axis=1)
 
 # Step 2: Remove rows with NaN values and labels equal to 0
+print("Step 2")
 labels_df = labels_df.dropna(subset=['Final Regularity Level'])
 labels_df['Final Regularity Level'] = labels_df['Final Regularity Level'].astype(int)
 labels_df = labels_df[labels_df['Final Regularity Level'] > 0]
 print(f"Number of data points after label cleaning: {len(labels_df)}")
 
 # Step 3: Validate the OBJ files
+print("Step 3")
+count = 0
+
 valid_rows = []
 
 for index, row in labels_df.iterrows():
@@ -54,6 +59,10 @@ for index, row in labels_df.iterrows():
             print(f"File '{obj_file}' failed to load due to: {e}")
     else:
         print(f"File not found: {obj_file}")
+
+    count += 1
+    if count % 10 == 0:
+        print(f"Processed {count} files so far...")
 
 # Step 4: Create a DataFrame with the valid rows only
 validated_df = pd.DataFrame(valid_rows)
