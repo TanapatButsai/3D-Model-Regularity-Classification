@@ -15,7 +15,7 @@ file_path = "datasets/3d-future-dataset/label/Final_Validated_Regularity_Levels.
 
 # Step 1: Load and Clean the Excel Data
 labels_df = pd.read_excel(file_path)
-MAX_DATA_POINTS = len(labels_df) - 1
+MAX_DATA_POINTS = 3000
 
 # Limit the dataset for testing
 final_labels_df = labels_df[['Object ID (Dataset Original Object ID)', 'Final Regularity Level']]
