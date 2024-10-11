@@ -1,84 +1,57 @@
 import torch
+import torch.nn as nn
 import torch.optim as optim
 from torch.utils.data import DataLoader
-import pandas as pd
-from sklearn.model_selection import train_test_split
-from model import PointNet2
-from data_loader import MeshDataset
+from model import PointNet2  # Assuming PointNet++ model
+from data_loader import MeshDataset  # Custom data loader
 
-# Configuration settings
-MAX_DATA_POINTS = 10000
-BATCH_SIZE = 32
-NUM_CLASSES = 4
-NUM_EPOCHS = 50
-LEARNING_RATE = 0.001
-PATIENCE = 5
-
-# Load the label data
-file_path = 'datasets/3d-future-dataset/label/Final_Validated_Regularity_Levels.xlsx'
-labels_df = pd.read_excel(file_path)
-
-# Clean and shuffle the data
-labels_df = labels_df.dropna(subset=['Final Regularity Level'])
-labels_df['Final Regularity Level'] = labels_df['Final Regularity Level'].astype(int)
-labels_df = labels_df.sample(n=MAX_DATA_POINTS, random_state=42)
-
-# Train-validation split
-train_df, val_df = train_test_split(labels_df, test_size=0.2, random_state=42)
-
-# Create datasets and data loaders
+# Configuration parameters
+labels_file = 'datasets/3d-future-dataset/label/Final_Validated_Regularity_Levels.xlsx'
 base_dir = 'datasets/3d-future-dataset/3D-FUTURE-model'
-train_dataset = MeshDataset(base_dir, train_df)
-val_dataset = MeshDataset(base_dir, val_df)
+max_data_points = 128  # Adjust based on your dataset's typical size
+batch_size = 16
+num_epochs = 20
+learning_rate = 0.001
 
-train_loader = DataLoader(train_dataset, batch_size=BATCH_SIZE, shuffle=True)
-val_loader = DataLoader(val_dataset, batch_size=BATCH_SIZE, shuffle=False)
+# Initialize dataset and data loaders
+train_dataset = MeshDataset(labels_file=labels_file, base_dir=base_dir, max_data_points=max_data_points)
+train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True)
 
-# Initialize model, optimizer, and loss function
-model = PointNet2(num_classes=NUM_CLASSES)
-optimizer = optim.Adam(model.parameters(), lr=LEARNING_RATE)
-criterion = torch.nn.CrossEntropyLoss()
+# Initialize the model, loss function, and optimizer
+model = PointNet2(num_classes=4)  # Adjust num_classes as per your specific use case
+criterion = nn.CrossEntropyLoss()
+optimizer = optim.Adam(model.parameters(), lr=learning_rate)
 
-best_val_loss = float('inf')
-patience_counter = 0
+# Check if CUDA is available and use GPU if possible
+device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+model = model.to(device)
 
-for epoch in range(NUM_EPOCHS):
+# Training loop
+print("Starting Training...")
+for epoch in range(num_epochs):
     model.train()
-    train_loss = 0
+    train_loss = 0.0
+
     for inputs, labels in train_loader:
-        if inputs is None:
+        # Ensure input size is correct before training
+        if inputs.shape[1] != max_data_points:
+            print(f"Skipping batch with input shape: {inputs.shape}")
             continue
+
+        inputs = inputs.to(device)
+        labels = labels.to(device)
 
         optimizer.zero_grad()
         outputs = model(inputs)
         loss = criterion(outputs, labels)
         loss.backward()
         optimizer.step()
+
         train_loss += loss.item()
 
-    avg_train_loss = train_loss / len(train_loader)
+    train_loss /= len(train_loader)
 
-    # Validation loop
-    model.eval()
-    val_loss = 0
-    with torch.no_grad():
-        for inputs, labels in val_loader:
-            if inputs is None:
-                continue
+    # Display the training progress
+    print(f'Epoch [{epoch+1}/{num_epochs}], Loss: {train_loss:.4f}')
 
-            outputs = model(inputs)
-            loss = criterion(outputs, labels)
-            val_loss += loss.item()
-
-    avg_val_loss = val_loss / len(val_loader)
-
-    if avg_val_loss < best_val_loss:
-        best_val_loss = avg_val_loss
-        torch.save(model.state_dict(), 'best_pointnet2_model.pth')
-        patience_counter = 0
-    else:
-        patience_counter += 1
-
-    if patience_counter >= PATIENCE:
-        print("Early stopping triggered.")
-        break
+print("Training Complete!")
