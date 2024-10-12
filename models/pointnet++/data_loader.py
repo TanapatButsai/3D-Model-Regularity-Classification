@@ -1,70 +1,45 @@
 import os
+import pandas as pd
 import torch
 from torch.utils.data import Dataset
-import pandas as pd
+import trimesh
 import numpy as np
-from pytorch3d.io import load_objs_as_meshes
 
 class MeshDataset(Dataset):
-    def __init__(self, base_dir, labels_df, num_points=1024, augment=False):
+    def __init__(self, labels_file, base_dir, max_data_points):
+        self.labels_df = pd.read_excel(labels_file).head(max_data_points)
         self.base_dir = base_dir
-        self.labels_df = labels_df
-        self.num_points = num_points
-        self.augment = augment
+        self.max_vertices = 50000  # Set a maximum number of vertices for padding/truncation
 
     def __len__(self):
         return len(self.labels_df)
 
     def __getitem__(self, idx):
-        obj_id = self.labels_df.iloc[idx]['Object ID (Dataset Original Object ID)']
-        label = self.labels_df.iloc[idx]['Final Regularity Level'] - 1  # Adjust labels to be 0-indexed
+        label_info = self.labels_df.iloc[idx]
+        obj_id = label_info['Object ID (Dataset Original Object ID)']
+        obj_file_path = os.path.join(self.base_dir, obj_id, 'normalized_model.obj')
 
-        obj_file = os.path.join(self.base_dir, obj_id, 'normalized_model.obj')
+        vertices = self.load_vertices(obj_file_path)
+        label = int(label_info['Final Regularity Level'])
 
-        # Check if the file exists
-        if not os.path.exists(obj_file):
-            print(f"File not found: {obj_file}")
-            return None, None  # Skip the sample if the file does not exist
+        return torch.tensor(vertices, dtype=torch.float32).permute(1, 0), torch.tensor(label, dtype=torch.long)
 
-        point_cloud = self.mesh_to_point_cloud(obj_file)
-
-        if point_cloud is None:
-            return None, None  # Skip the sample if mesh processing fails
-
-        # Apply data augmentation if the augment flag is set to True
-        if self.augment:
-            point_cloud = self.augment_point_cloud(point_cloud)
-
-        return torch.tensor(point_cloud.T, dtype=torch.float32), label
-
-    def mesh_to_point_cloud(self, obj_file):
+    def load_vertices(self, file_path):
+        """
+        Load vertices from an OBJ file and ensure consistent size.
+        """
         try:
-            mesh = load_objs_as_meshes([obj_file])
-            vertices = mesh.verts_packed().numpy()
-
-            # Randomly sample points from the mesh vertices to create a point cloud
-            point_indices = np.random.choice(vertices.shape[0], self.num_points, replace=True)
-            point_cloud = vertices[point_indices]
-
-            return point_cloud
+            mesh = trimesh.load(file_path)
+            vertices = mesh.vertices
+            if len(vertices) == 0:
+                raise ValueError("No vertices found in OBJ file.")
+            # Pad or truncate vertices to ensure consistent size
+            if len(vertices) > self.max_vertices:
+                vertices = vertices[:self.max_vertices]
+            else:
+                padding = self.max_vertices - len(vertices)
+                vertices = np.pad(vertices, ((0, padding), (0, 0)), mode='constant', constant_values=0)
+            return vertices
         except Exception as e:
-            print(f"Error processing file {obj_file}: {e}")
-            return None
-
-    def augment_point_cloud(self, points):
-        # Apply random rotations to the point cloud
-        angle = np.random.uniform(0, 2 * np.pi)
-        rotation_matrix = np.array([[np.cos(angle), -np.sin(angle), 0],
-                                    [np.sin(angle), np.cos(angle), 0],
-                                    [0, 0, 1]])
-        points = np.dot(points, rotation_matrix)
-
-        # Add Gaussian noise to the point cloud
-        noise = np.random.normal(0, 0.02, points.shape)
-        points += noise
-
-        # Randomly scale the point cloud
-        scale = np.random.uniform(0.9, 1.1)
-        points *= scale
-
-        return points
+            print(f"Error loading vertices from {file_path}: {e}")
+            return np.zeros((self.max_vertices, 3))  # Return a zero tensor if loading fails
