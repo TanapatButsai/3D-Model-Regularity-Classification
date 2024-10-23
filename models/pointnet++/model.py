@@ -1,3 +1,4 @@
+### model.py
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -20,10 +21,12 @@ class PointNetSetAbstraction(nn.Module):
     def forward(self, xyz, points):
         # For simplicity, we'll skip the sampling and grouping steps
         new_xyz = xyz[:, :self.npoint, :]  # Placeholder for the new centroid positions
-        new_points = torch.cat([xyz, points], dim=-1) if points is not None else xyz.unsqueeze(1)  # Placeholder
+        new_points = torch.cat([xyz, points], dim=-1) if points is not None else xyz  # Placeholder
+        new_points = new_points.permute(0, 2, 1).unsqueeze(-1)  # Adjust shape for Conv2d
         for i, conv in enumerate(self.mlp_convs):
             bn = self.mlp_bns[i]
             new_points = F.relu(bn(conv(new_points)))
+        new_points = new_points.squeeze(-1).permute(0, 2, 1)  # Adjust shape back
         return new_xyz, new_points
 
 class PointNet2(nn.Module):
@@ -41,11 +44,16 @@ class PointNet2(nn.Module):
         self.fc3 = nn.Linear(256, num_classes)
 
     def forward(self, x):
-        B, _, _ = x.shape
+        print(f"Input to PointNet2: {x.shape}")
+        B, _, _, _ = x.shape  # Expecting shape [batch_size, num_channels, num_points, 1]
+        x = x.squeeze(-1)  # Remove the last dimension to get [batch_size, num_channels, num_points]
         l1_xyz, l1_points = self.sa1(x, None)
+        print(f"After SA1 - l1_xyz: {l1_xyz.shape}, l1_points: {l1_points.shape}")
         l2_xyz, l2_points = self.sa2(l1_xyz, l1_points)
+        print(f"After SA2 - l2_xyz: {l2_xyz.shape}, l2_points: {l2_points.shape}")
         l3_xyz, l3_points = self.sa3(l2_xyz, l2_points)
-        x = l3_points.view(B, 1024)
+        print(f"After SA3 - l3_xyz: {l3_xyz.shape}, l3_points: {l3_points.shape}")
+        x = l3_points.view(B, -1)  # Flatten the feature vector
         x = self.drop1(F.relu(self.bn1(self.fc1(x))))
         x = self.drop2(F.relu(self.bn2(self.fc2(x))))
         x = self.fc3(x)

@@ -72,7 +72,7 @@ def process_obj_files(base_dir, labels_df, augment=False):
     validated_labels_df = pd.DataFrame(validated_labels)
     return validated_labels_df
 
-def save_validated_data(validated_labels_df, output_file_path='data/Final_Validated_Regularity_Levels.xlsx'):
+def save_validated_data(validated_labels_df, output_file_path='datasets/3d-future-dataset/label/Final_Validated_Regularity_Levels.xlsx'):
     """
     Save the validated labels to an Excel file.
     """
@@ -81,7 +81,7 @@ def save_validated_data(validated_labels_df, output_file_path='data/Final_Valida
 
 # Main script execution
 if __name__ == "__main__":
-    base_dir = 'datasets/3d-future-dataset/3D-FUTURE-model'
+    base_dir = 'datasets/3d-future-dataset/objs'
 
     # Process the dataset to validate OBJ files
     validated_labels_df = process_obj_files(base_dir, labels_df, augment=True)

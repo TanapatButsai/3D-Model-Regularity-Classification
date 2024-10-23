@@ -14,14 +14,14 @@ from sklearn.metrics import accuracy_score
 from meshcnn import MeshCNN  # Assuming MeshCNN is properly installed
 
 # Configuration
-base_dir = 'datasets/3d-future-dataset/3D-FUTURE-model'  # obj dir location
+base_dir = 'datasets/3d-future-dataset/objs'  # obj dir location
 file_path = "datasets/3d-future-dataset/label/Final_Validated_Regularity_Levels.xlsx"  # label location
 
 # Step 1: Load and Clean the Excel Data
 print("Step 1: Loading and cleaning the Excel data...")
 labels_df = pd.read_excel(file_path)
 # Configuration for MAX_DATA_POINTS
-MAX_DATA_POINTS = 2000  # Set to the desired number of data points or None to use the entire dataset
+MAX_DATA_POINTS = None  # Set to the desired number of data points or None to use the entire dataset
 MAX_DATA_POINTS = len(labels_df) if MAX_DATA_POINTS is None else MAX_DATA_POINTS
 
 # Limit the dataset for testing

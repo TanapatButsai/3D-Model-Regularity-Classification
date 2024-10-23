@@ -1,3 +1,4 @@
+### data_loader.py
 import os
 import pandas as pd
 import torch
@@ -22,7 +23,7 @@ class MeshDataset(Dataset):
         vertices = self.load_vertices(obj_file_path)
         label = int(label_info['Final Regularity Level'])
 
-        return torch.tensor(vertices, dtype=torch.float32).permute(1, 0), torch.tensor(label, dtype=torch.long)
+        return torch.tensor(vertices, dtype=torch.float32), torch.tensor(label, dtype=torch.long)
 
     def load_vertices(self, file_path):
         """
@@ -42,4 +43,4 @@ class MeshDataset(Dataset):
             return vertices
         except Exception as e:
             print(f"Error loading vertices from {file_path}: {e}")
-            return np.zeros((self.max_vertices, 3))  # Return a zero tensor if loading fails
+            return np.zeros((self.max_vertices, 3))

@@ -1,3 +1,4 @@
+### train.py
 import torch
 import torch.nn as nn
 import torch.optim as optim
@@ -7,7 +8,7 @@ from data_loader import MeshDataset  # Custom data loader
 
 # Configuration parameters
 labels_file = 'datasets/3d-future-dataset/label/Final_Validated_Regularity_Levels.xlsx'
-base_dir = 'datasets/3d-future-dataset/3D-FUTURE-model'
+base_dir = 'datasets/3d-future-dataset/objs'
 max_data_points = 128  # Adjust based on your dataset's typical size
 batch_size = 16
 num_epochs = 20
@@ -33,16 +34,15 @@ for epoch in range(num_epochs):
     train_loss = 0.0
 
     for inputs, labels in train_loader:
-        # Ensure input size is correct before training
-        if inputs.shape[1] != max_data_points:
-            print(f"Skipping batch with input shape: {inputs.shape}")
-            continue
-
+        print(f"Input shape before permute: {inputs.shape}")
+        inputs = inputs.permute(0, 2, 1)  # Change shape to [batch_size, num_channels, num_points]
+        print(f"Input shape after permute: {inputs.shape}")
         inputs = inputs.to(device)
         labels = labels.to(device)
 
         optimizer.zero_grad()
         outputs = model(inputs)
+        print(f"Output shape: {outputs.shape}")
         loss = criterion(outputs, labels)
         loss.backward()
         optimizer.step()
