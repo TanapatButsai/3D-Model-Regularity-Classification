@@ -34,8 +34,8 @@ data = data.dropna(subset=['Final Regularity Level'])
 data['Final Regularity Level'] = data['Final Regularity Level'].astype(int)
 data = data[data['Final Regularity Level'] > 0]
 
-# Display the length of data after cleaning
-print(f"Number of data points after cleaning: {len(data)}")
+# Display the length of data before cleaning
+print(f"Number of data points before cleaning: {len(data)}")
 
 def load_and_validate_obj_file(file_path):
     """
