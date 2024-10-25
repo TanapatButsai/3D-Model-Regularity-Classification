@@ -4,8 +4,8 @@ import numpy as np
 import trimesh
 
 # Load the raw label data
-file_path = 'datasets/hermanmiller/label/HermanMiller.xlsx'  # Path to the original Excel file
-labels_df = pd.read_excel(file_path)
+excel_path = 'datasets\hermanmiller\label\HermanMiller.xlsx'
+data = pd.read_excel(excel_path)
 
 # Function to determine the final regularity level
 def determine_final_level(row):
@@ -25,25 +25,35 @@ def determine_final_level(row):
     return row['Layout level (Person 1)']
 
 # Apply the function to create the 'Final Regularity Level' column
-labels_df['Final Regularity Level'] = labels_df.apply(determine_final_level, axis=1)
+data['Final Regularity Level'] = data.apply(determine_final_level, axis=1)
 
 # Remove rows with NaN values in 'Final Regularity Level'
-labels_df = labels_df.dropna(subset=['Final Regularity Level'])
+data = data.dropna(subset=['Final Regularity Level'])
 
 # Convert 'Final Regularity Level' to integer and remove rows where the level is 0
-labels_df['Final Regularity Level'] = labels_df['Final Regularity Level'].astype(int)
-labels_df = labels_df[labels_df['Final Regularity Level'] > 0]
+data['Final Regularity Level'] = data['Final Regularity Level'].astype(int)
+data = data[data['Final Regularity Level'] > 0]
 
 # Display the length of data before cleaning
-print(f"Number of data points before cleaning: {len(labels_df)}")
+print(f"Number of data points before cleaning: {len(data)}")
 
 def load_and_validate_obj_file(file_path):
     """
     Load and validate an OBJ file to check for integrity.
     Returns vertices if the file is valid, otherwise returns None.
+    Also checks if the file exists for 3D model classification.
     """
+    if not os.path.exists(file_path):
+        print(f"File not found: {file_path}")
+        return None
+    
     try:
         mesh = trimesh.load(file_path)
+        # Only accept if the loaded object is a Mesh
+        if not isinstance(mesh, trimesh.Trimesh):
+            print(f"Skipping file {file_path}: Not a valid Mesh object.")
+            return None
+        
         vertices = mesh.vertices
         if len(vertices) == 0:
             print(f"Skipping file {file_path}: No vertices found.")
@@ -53,16 +63,16 @@ def load_and_validate_obj_file(file_path):
         print(f"Error loading file {file_path}: {e}")
         return None
 
-def process_obj_files(base_dir, labels_df, augment=False):
+def process_obj_files(base_dir, data, augment=False):
     """
     Process all OBJ files, validate them, and apply augmentations if specified.
     """
     validated_labels = []
 
-    for index, row in labels_df.iterrows():
-        obj_id = row['Object ID (Dataset Original Object ID)']
-        obj_filename = f"{obj_id}.obj"
-        obj_file_path = os.path.join(base_dir, obj_id, obj_filename)
+    for index, row in data.iterrows():
+        layer_folder = str(row['Object ID (Dataset Original Object ID)']).strip()
+        obj_filename = layer_folder
+        obj_file_path = os.path.join(base_dir, f"{layer_folder}", f"{obj_filename}.obj")
 
         vertices = load_and_validate_obj_file(obj_file_path)
         if vertices is not None:
@@ -70,6 +80,8 @@ def process_obj_files(base_dir, labels_df, augment=False):
 
     # Create a new DataFrame with validated labels only
     validated_labels_df = pd.DataFrame(validated_labels)
+    validated_labels_df.reset_index(drop=True, inplace=True)
+    validated_labels_df['Count No.'] = validated_labels_df.index + 1
     return validated_labels_df
 
 def save_validated_data(validated_labels_df, output_file_path='datasets/hermanmiller/label/Final_Validated_Regularity_Levels.xlsx'):
@@ -81,10 +93,10 @@ def save_validated_data(validated_labels_df, output_file_path='datasets/hermanmi
 
 # Main script execution
 if __name__ == "__main__":
-    base_dir = 'datasets\hermanmiller\obj-hermanmiller'
+    base_dir = 'datasets/hermanmiller/obj-hermanmiller'
 
     # Process the dataset to validate OBJ files
-    validated_labels_df = process_obj_files(base_dir, labels_df, augment=True)
+    validated_labels_df = process_obj_files(base_dir, data, augment=True)
 
     # Save the validated labels to the final Excel file
     save_validated_data(validated_labels_df, 'datasets/hermanmiller/label/Final_Validated_Regularity_Levels.xlsx')
