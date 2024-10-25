@@ -34,8 +34,8 @@ labels_df = labels_df.dropna(subset=['Final Regularity Level'])
 labels_df['Final Regularity Level'] = labels_df['Final Regularity Level'].astype(int)
 labels_df = labels_df[labels_df['Final Regularity Level'] > 0]
 
-# Display the length of data after cleaning
-print(f"Number of data points after cleaning: {len(labels_df)}")
+# Display the length of data before cleaning
+print(f"Number of data points before cleaning: {len(labels_df)}")
 
 # Function to load and validate OBJ files
 def load_and_validate_obj_file(file_path):

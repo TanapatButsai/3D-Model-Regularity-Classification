@@ -11,14 +11,22 @@ from tqdm import tqdm
 from sklearn.preprocessing import LabelEncoder
 
 # Load labels from Excel file
-label_file = 'datasets/pix3d/label/Final_Validated_Regularity_Levels.xlsx'
+label_file = 'datasets/abo/label/Final_Validated_Regularity_Levels.xlsx'
 label_data = pd.read_excel(label_file)
+
+# Define MAX_DATA_POINTS
+MAX = len(label_data)
+MAX_DATA_POINTS = MAX # You can change this number based on how many data points you want to train with
+
+# Limit the number of data points based on MAX_DATA_POINTS
+if len(label_data) > MAX_DATA_POINTS:
+    label_data = label_data.sample(n=MAX_DATA_POINTS, random_state=42)
 
 # Extract relevant columns
 labels = label_data[['Object ID (Dataset Original Object ID)', 'Final Regularity Level']]
 
 # Path to the folder containing 3D objects
-obj_folder = 'datasets/pix3d/obj-pix3d'
+obj_folder = 'datasets/abo/obj-ABO'
 
 # Feature extraction function
 def extract_features_from_obj(file_path):
@@ -43,7 +51,7 @@ for index, row in tqdm(labels.iterrows(), total=len(labels)):
     regularity_level = row['Final Regularity Level']
     
     # Construct the path
-    obj_file = os.path.join(obj_folder, 'models', object_id.strip(), 'model.obj')
+    obj_file = os.path.join(obj_folder, object_id.strip(), f'{object_id.strip()}.obj')
     
     # Extract features
     if os.path.isfile(obj_file):
@@ -80,7 +88,7 @@ X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_
 # Initialize classifiers
 svm_clf = SVC()
 rf_clf = RandomForestClassifier()
-xgb_clf = XGBClassifier(use_label_encoder=False, eval_metric='mlogloss')
+xgb_clf = XGBClassifier(eval_metric='mlogloss')
 
 # Train and evaluate SVM
 svm_clf.fit(X_train, y_train)

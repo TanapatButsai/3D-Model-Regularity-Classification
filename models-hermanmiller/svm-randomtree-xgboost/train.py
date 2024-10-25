@@ -10,14 +10,14 @@ import trimesh
 from tqdm import tqdm
 
 # Load labels from Excel file
-label_file = 'datasets/ikea/label/Final_Validated_Regularity_Levels.xlsx'
+label_file = 'datasets/hermanmiller/label/Final_Validated_Regularity_Levels.xlsx'
 label_data = pd.read_excel(label_file)
 
 # Extract relevant columns
 labels = label_data[['Object ID (Dataset Original Object ID)', 'Final Regularity Level']]
 
 # Path to the folder containing 3D objects
-obj_folder = 'datasets/ikea/obj-ikea'
+obj_folder = 'datasets/hermanmiller/obj-hermanmiller'
 
 # Feature extraction function
 def extract_features_from_obj(file_path):
@@ -39,26 +39,15 @@ features = []
 targets = []
 
 for index, row in tqdm(labels.iterrows(), total=len(labels)):
-    print(f"Processing row {index + 1}/{len(labels)}: Object ID = {row['Object ID (Dataset Original Object ID)']}")
     object_id = row['Object ID (Dataset Original Object ID)']
     regularity_level = row['Final Regularity Level']
     
-    # Search for the OBJ file in subdirectories
-    obj_file = None
-    for root, _, files in os.walk(obj_folder):
-        for file in files:
-            if file == f"ikea_model.obj":
-                obj_file = os.path.join(root, file)
-                break
-        if obj_file:
-            break
+    # Construct the path using FolderName and Object ID
+    obj_file = os.path.join(obj_folder, object_id.strip(), f"{object_id.strip()}.obj")
     
     # Extract features
-    if obj_file:
-        print(f"Found OBJ file: {obj_file}")
+    if os.path.isfile(obj_file):
         feature_vector = extract_features_from_obj(obj_file)
-    else:
-        print(f"OBJ file not found for Object ID: {object_id}")
         if feature_vector is not None:
             features.append(feature_vector)
             targets.append(regularity_level)
