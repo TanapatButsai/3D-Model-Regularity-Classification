@@ -6,9 +6,9 @@ import numpy as np
 from pytorch3d.io import load_objs_as_meshes
 
 class MeshDataset(Dataset):
-    def __init__(self, base_dir, excel_path, num_points=1024, augment=False):
+    def __init__(self, base_dir, labels_df, num_points=1024, augment=False):
         self.base_dir = base_dir
-        self.labels_df = pd.read_excel(excel_path)
+        self.labels_df = pd.labels_df
         self.num_points = num_points
         self.augment = augment
 

@@ -9,7 +9,7 @@ from model import PointNet
 import time
 
 # Configuration
-MAX_DATA_POINTS = 1570
+MAX_DATA_POINTS = 233
 num_epochs = 50
 batch_size = 32
 learning_rate = 0
@@ -18,7 +18,7 @@ device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
 # Step 1: Load and Prepare the Labels Data
 # DONT FORGET TO RUN "data_preprocessing.py" BEFORE TRAIN
-file_path = 'datasets\hermanmiller\label\Final_Validated_Regularity_Levels.xlsx'  # Replace with your file path
+file_path = 'datasets/hermanmiller/label/Final_Validated_Regularity_Levels.xlsx'  # Replace with your file path
 labels_df = pd.read_excel(file_path)
 
 # Step 2: Randomly sample data points from the cleaned dataset
@@ -31,7 +31,7 @@ train_labels_df = labels_df.iloc[:train_size]
 val_labels_df = labels_df.iloc[train_size:]
 
 # Step 4: Create datasets and data loaders
-base_dir = '/Volumes/MMFD/obj'
+base_dir = 'datasets/hermanmiller/obj-hermanmiller'
 train_dataset = MeshDataset(base_dir=base_dir, labels_df=train_labels_df, augment=True)
 val_dataset = MeshDataset(base_dir=base_dir, labels_df=val_labels_df, augment=False)
 train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True)
