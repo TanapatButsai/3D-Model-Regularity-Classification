@@ -8,15 +8,67 @@ import trimesh
 from sklearn.model_selection import train_test_split
 from tqdm import tqdm
 
-# Load labels from Excel file
-label_file = 'datasets\ShapeNetCoreV2\label\Final_Validated_Regularity_Levels.xlsx'
+# Function to load point cloud from an OBJ file and return it as a numpy array
+def load_pointcloud_from_obj(file_path, num_points=1024):
+    try:
+        mesh = trimesh.load(file_path)
+        points = mesh.sample(num_points)
+        return points
+    except Exception as e:
+        print(f"Error loading {file_path}: {e}")
+        return None
+
+# Function to process the dataset structure, assuming each folder contains 'ikea_model.obj'
+def process_dataset_structure(base_folder, labels):
+    point_clouds = []
+    targets = []
+
+    # Iterate through the labels to construct file paths and load data
+    for index, row in tqdm(labels.iterrows(), total=len(labels)):
+        object_id = row['Object ID (Dataset Original Object ID)']
+        regularity_level = row['Final Regularity Level']
+        folder_name = row['FolderName']
+
+        # Construct the path to the obj file using FolderName and Object ID
+        obj_folder = os.path.join(base_folder, folder_name.strip(), object_id.strip())
+        obj_file = os.path.join(obj_folder, 'ikea_model.obj')
+
+        # Load the point cloud from the obj file
+        if os.path.isfile(obj_file):
+            point_cloud = load_pointcloud_from_obj(obj_file)
+            if point_cloud is not None:
+                point_clouds.append(point_cloud)
+                targets.append(regularity_level)
+        else:
+            print(f"OBJ file not found: {obj_file}")
+
+    return np.array(point_clouds), np.array(targets)
+
+# Path to your base folder and Excel file
+base_folder = 'datasets\ikea\obj-IKEA'  # Replace with the path to your dataset folder
+label_file = 'datasets\ikea\label\Final_Validated_Regularity_Levels.xlsx'  # Replace with the actual Excel file path
+
+# Load labels from the Excel file
 label_data = pd.read_excel(label_file)
 
-# Extract relevant columns
-labels = label_data[['Object ID (Dataset Original Object ID)', 'Final Regularity Level', 'Folder Name']]
+# Process the dataset to extract point clouds and corresponding labels
+point_clouds, targets = process_dataset_structure(base_folder, label_data)
 
-# Path to the folder containing 3D objects
-obj_folder = 'datasets\ShapeNetCoreV2\obj-ShapeNetCoreV2'
+# Check if point clouds were loaded
+if len(point_clouds) == 0:
+    print("No point clouds loaded. Please check the dataset and file paths.")
+    exit()
+
+# Convert to numpy arrays
+X = np.array(point_clouds)
+y = np.array(targets) - np.min(targets)
+
+# Convert to PyTorch tensors
+X_tensor = torch.tensor(X, dtype=torch.float32)
+y_tensor = torch.tensor(y, dtype=torch.long)
+
+# Split dataset into training and testing sets
+X_train, X_test, y_train, y_test = train_test_split(X_tensor, y_tensor, test_size=0.2, random_state=42)
 
 # PointNet model definition
 class PointNet(nn.Module):
@@ -52,51 +104,8 @@ class PointNet(nn.Module):
         
         return x
 
-# Function to load point cloud from an OBJ file and return it as a numpy array
-def load_pointcloud_from_obj(file_path, num_points=1024):
-    try:
-        mesh = trimesh.load(file_path)
-        points = mesh.sample(num_points)
-        return points
-    except Exception as e:
-        print(f"Error loading {file_path}: {e}")
-        return None
-
-# Prepare dataset for PointNet
-point_clouds = []
-targets = []
-
-for index, row in tqdm(labels.iterrows(), total=len(labels)):
-    first_layer_folder = str(int(row['Folder Name'])).zfill(8)
-    second_layer_folder = str(row['Object ID (Dataset Original Object ID)']).strip()
-    obj_filename = 'model_normalized'
-    obj_file = os.path.join(obj_folder, first_layer_folder, second_layer_folder, 'models', f"{obj_filename}.obj")
-    
-    # Load point cloud from the OBJ file
-    if os.path.isfile(obj_file):
-        point_cloud = load_pointcloud_from_obj(obj_file)
-        if point_cloud is not None:
-            point_clouds.append(point_cloud)
-            targets.append(row['Final Regularity Level'])
-
-# Check if point clouds were loaded
-if len(point_clouds) == 0:
-    print("No point clouds loaded. Please check the dataset and file paths.")
-    exit()
-
-# Convert to numpy arrays
-X = np.array(point_clouds)
-y = np.array(targets) - np.min(targets)
-
-# Convert to PyTorch tensors
-X_tensor = torch.tensor(X, dtype=torch.float32)
-y_tensor = torch.tensor(y, dtype=torch.long)
-
-# Split dataset into training and testing sets
-X_train, X_test, y_train, y_test = train_test_split(X_tensor, y_tensor, test_size=0.2, random_state=42)
-
 # Initialize the PointNet model, loss function, and optimizer
-model = PointNet(k=len(np.unique(y_train)))  # Set the number of classes dynamically
+model = PointNet(k=4)
 optimizer = optim.Adam(model.parameters(), lr=0.001)
 criterion = nn.CrossEntropyLoss()
 
