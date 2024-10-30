@@ -1,188 +1,136 @@
 import os
-import torch
-import torch.nn as nn
-import torch.optim as optim
-import numpy as np
 import pandas as pd
-import trimesh
-from sklearn.model_selection import train_test_split
+import numpy as np
+import torch
+from torch.utils.data import Dataset, DataLoader
+from torch import nn, optim
 from tqdm import tqdm
-from sklearn.utils import class_weight
+import trimesh
 
-# Load labels from Excel file
-label_file = 'datasets/ShapeNetCoreV2/label/Final_Validated_Regularity_Levels.xlsx'
-label_data = pd.read_excel(label_file)
+# Function to sample or pad the point cloud to a fixed number of points
+def fix_point_cloud_size(point_cloud, num_points=1024):
+    if point_cloud.shape[0] > num_points:
+        # Downsample to the desired number of points
+        indices = np.random.choice(point_cloud.shape[0], num_points, replace=False)
+        point_cloud = point_cloud[indices, :]
+    elif point_cloud.shape[0] < num_points:
+        # Upsample by repeating points
+        indices = np.random.choice(point_cloud.shape[0], num_points - point_cloud.shape[0], replace=True)
+        point_cloud = np.concatenate([point_cloud, point_cloud[indices, :]], axis=0)
+    
+    return point_cloud
 
-# Extract relevant columns
-labels = label_data[['Object ID (Dataset Original Object ID)', 'Final Regularity Level', 'Folder Name']]
-
-# Path to the folder containing 3D objects
-obj_folder = 'datasets/ShapeNetCoreV2/obj-ShapeNetCoreV2'
-
-# PointNet model definition (with increased dropout to combat overfitting)
-class PointNet(nn.Module):
-    def __init__(self, k=4):
-        super(PointNet, self).__init__()
+# Dataset class for ShapeNet
+class ShapeNetDataset(Dataset):
+    def __init__(self, labels, obj_folder, num_points=1024):
+        self.labels = labels
+        self.obj_folder = obj_folder
+        self.num_points = num_points
+    
+    def __len__(self):
+        return len(self.labels)
+    
+    def __getitem__(self, idx):
+        row = self.labels.iloc[idx]
+        first_layer_folder = str(int(row['Folder Name'])).zfill(8)
+        second_layer_folder = str(row['Object ID (Dataset Original Object ID)']).strip()
+        obj_filename = 'model_normalized'
+        obj_file = os.path.join(self.obj_folder, first_layer_folder, second_layer_folder, 'models', f"{obj_filename}.obj")
         
-        self.conv1 = nn.Conv1d(3, 128, 1)
-        self.conv2 = nn.Conv1d(128, 256, 1)
-        self.conv3 = nn.Conv1d(256, 1024, 1)
+        try:
+            mesh = trimesh.load(obj_file)
+            point_cloud = np.array(mesh.vertices)
+        except Exception as e:
+            print(f"Error loading {obj_file}: {e}")
+            point_cloud = np.zeros((self.num_points, 3))  # Default to zeros if there's an error
+        
+        # Ensure point cloud has exactly num_points
+        point_cloud = fix_point_cloud_size(point_cloud, self.num_points)
+        
+        label = row['Final Regularity Level'] - 1  # Adjust label to start from 0
+        return torch.tensor(point_cloud, dtype=torch.float32), torch.tensor(label, dtype=torch.long)
+
+# Simple PointNet implementation for demonstration
+class PointNet(nn.Module):
+    def __init__(self, num_classes):
+        super(PointNet, self).__init__()
+        self.conv1 = nn.Conv1d(3, 64, 1)
+        self.conv2 = nn.Conv1d(64, 128, 1)
+        self.conv3 = nn.Conv1d(128, 1024, 1)
         self.fc1 = nn.Linear(1024, 512)
         self.fc2 = nn.Linear(512, 256)
-        self.fc3 = nn.Linear(256, k)
-        
+        self.fc3 = nn.Linear(256, num_classes)
+        self.maxpool = nn.MaxPool1d(1024)
         self.relu = nn.ReLU()
-        self.dropout = nn.Dropout(p=0.6)
-    
+
     def forward(self, x):
+        x = x.transpose(2, 1)  # Change shape to (batch_size, 3, num_points)
         x = self.relu(self.conv1(x))
         x = self.relu(self.conv2(x))
         x = self.relu(self.conv3(x))
-        
-        # Dynamic max pooling based on input size
-        pool_size = x.size(2)  # Use the actual number of points in the input
-        x = nn.functional.max_pool1d(x, kernel_size=pool_size)
-        
-        x = x.view(-1, 1024)  # Reshape for fully connected layers
-        
-        # Fully connected layers
+        x = self.maxpool(x)
+        x = x.squeeze(-1)
         x = self.relu(self.fc1(x))
-        x = self.dropout(x)
         x = self.relu(self.fc2(x))
-        x = self.dropout(x)
         x = self.fc3(x)
-        
         return x
 
-
-
-# Function to load point cloud from an OBJ file and return it as a numpy array
-def load_pointcloud_from_obj(file_path, num_points=1024):
-    try:
-        mesh = trimesh.load(file_path)
-        points = mesh.sample(num_points)
-        return points
-    except Exception as e:
-        print(f"Error loading {file_path}: {e}")
-        return None
-
-# Apply random jittering, scaling, rotation, and point dropout as data augmentation
-def augment_pointcloud(points, dropout_ratio=0.05):
-    # Apply random jittering (adding small noise)
-    jitter = np.random.normal(0, 0.02, size=points.shape)
-    points += jitter
-
-    # Apply random scaling
-    scale = np.random.uniform(0.8, 1.2)
-    points *= scale
-
-    # Apply random rotation around the z-axis
-    theta = np.random.uniform(0, 2 * np.pi)
-    rotation_matrix = np.array([[np.cos(theta), -np.sin(theta), 0],
-                                [np.sin(theta), np.cos(theta), 0],
-                                [0, 0, 1]])
-    points = np.dot(points, rotation_matrix.T)
-
-    # Apply random point dropout
-    num_points = points.shape[0]
-    num_drop = int(dropout_ratio * num_points)
-    keep_idx = np.random.choice(num_points, num_points - num_drop, replace=False)
-    points = points[keep_idx, :]
+# Function to train the PointNet model
+def train_pointnet(dataset_folder, excel_path, num_epochs=20, batch_size=32, num_points=1024, learning_rate=0.001):
+    # Load labels from Excel file
+    label_data = pd.read_excel(excel_path)
+    labels = label_data[['Object ID (Dataset Original Object ID)', 'Final Regularity Level', 'Folder Name']]
     
-    return points
-
-# Prepare dataset for PointNet
-point_clouds = []
-targets = []
-
-for index, row in tqdm(labels.iterrows(), total=len(labels)):
-    first_layer_folder = str(int(row['Folder Name'])).zfill(8)
-    second_layer_folder = str(row['Object ID (Dataset Original Object ID)']).strip()
-    obj_filename = 'model_normalized'
-    obj_file = os.path.join(obj_folder, first_layer_folder, second_layer_folder, 'models', f"{obj_filename}.obj")
+    # Create dataset and dataloaders
+    dataset = ShapeNetDataset(labels, dataset_folder, num_points=num_points)
+    train_size = int(0.8 * len(dataset))
+    test_size = len(dataset) - train_size
+    train_dataset, test_dataset = torch.utils.data.random_split(dataset, [train_size, test_size])
     
-    # Load point cloud from the OBJ file and apply augmentation
-    if os.path.isfile(obj_file):
-        point_cloud = load_pointcloud_from_obj(obj_file)
-        if point_cloud is not None:
-            point_cloud = augment_pointcloud(point_cloud)
-            point_clouds.append(point_cloud)
-            targets.append(row['Final Regularity Level'])
-
-# Check if point clouds were loaded
-if len(point_clouds) == 0:
-    print("No point clouds loaded. Please check the dataset and file paths.")
-    exit()
-
-# Convert to numpy arrays
-X = np.array(point_clouds)
-y = np.array(targets) - np.min(targets)
-
-# Convert to PyTorch tensors
-X_tensor = torch.tensor(X, dtype=torch.float32)
-y_tensor = torch.tensor(y, dtype=torch.long)
-
-# Correct the class weight computation
-class_weights_np = class_weight.compute_class_weight(class_weight='balanced', classes=np.unique(y), y=y)
-class_weights = torch.tensor(class_weights_np, dtype=torch.float)
-
-# Split dataset into training and testing sets
-X_train, X_test, y_train, y_test = train_test_split(X_tensor, y_tensor, test_size=0.2, random_state=42)
-
-# Initialize the PointNet model, optimizer, loss function with class weighting, and learning rate scheduler
-model = PointNet(k=len(np.unique(y_train)))  # Set the number of classes dynamically
-
-criterion = nn.CrossEntropyLoss(weight=class_weights)
-
-# Switch optimizer to SGD with momentum
-optimizer = optim.SGD(model.parameters(), lr=0.01, momentum=0.9)
-scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=10, gamma=0.7)  # Learning rate scheduler
-
-# Training loop for PointNet
-num_epochs = 50
-batch_size = 8  # Adjusted batch size
-
-train_data = torch.utils.data.TensorDataset(X_train, y_train)
-train_loader = torch.utils.data.DataLoader(train_data, batch_size=batch_size, shuffle=True)
-
-test_data = torch.utils.data.TensorDataset(X_test, y_test)
-test_loader = torch.utils.data.DataLoader(test_data, batch_size=batch_size, shuffle=False)
-
-for epoch in range(num_epochs):
+    train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True)
+    test_loader = DataLoader(test_dataset, batch_size=batch_size, shuffle=False)
+    
+    print(f"Total dataset size: {len(dataset)} samples")
+    print(f"Training set size: {train_size} samples")
+    print(f"Test set size: {test_size} samples")
+    print(f"Batch size: {batch_size}")
+    
+    # Initialize PointNet model
+    num_classes = len(labels['Final Regularity Level'].unique())
+    model = PointNet(num_classes)
+    criterion = nn.CrossEntropyLoss()
+    optimizer = optim.Adam(model.parameters(), lr=learning_rate)
+    
+    # Training loop
     model.train()
-    running_loss = 0.0
-    for inputs, labels in train_loader:
-        # Transpose inputs to match the shape expected by PointNet (batch_size, num_points, 3)
-        inputs = inputs.transpose(2, 1)
-        
-        # Zero the parameter gradients
-        optimizer.zero_grad()
-        
-        # Forward pass
-        outputs = model(inputs)
-        loss = criterion(outputs, labels)
-        
-        # Backward pass and optimization
-        loss.backward()
-        optimizer.step()
-        
-        running_loss += loss.item()
+    for epoch in range(num_epochs):
+        epoch_loss = 0.0
+        for i, (inputs, labels) in enumerate(tqdm(train_loader)):
+            optimizer.zero_grad()
+            outputs = model(inputs)
+            loss = criterion(outputs, labels)
+            loss.backward()
+            optimizer.step()
+            epoch_loss += loss.item()
+        print(f"Epoch [{epoch + 1}/{num_epochs}], Loss: {epoch_loss / len(train_loader):.4f}")
     
-    scheduler.step()  # Update learning rate
-    print(f"Epoch [{epoch+1}/{num_epochs}], Loss: {running_loss/len(train_loader):.4f}")
+    # Evaluation loop
+    model.eval()
+    correct = 0
+    total = 0
+    with torch.no_grad():
+        for inputs, labels in test_loader:
+            outputs = model(inputs)
+            _, predicted = torch.max(outputs, 1)
+            total += labels.size(0)
+            correct += (predicted == labels).sum().item()
+    
+    accuracy = 100 * correct / total
+    print(f"Test Accuracy: {accuracy:.2f}%")
 
-# Evaluation on the test set
-model.eval()
-correct = 0
-total = 0
+# Path setup
+dataset_folder = 'datasets/ShapeNetCoreV2/obj-ShapeNetCoreV2'
+excel_path = 'datasets/ShapeNetCoreV2/label/Final_Validated_Regularity_Levels.xlsx'
 
-with torch.no_grad():
-    for inputs, labels in test_loader:
-        inputs = inputs.transpose(2, 1)
-        outputs = model(inputs)
-        _, predicted = torch.max(outputs.data, 1)
-        total += labels.size(0)
-        correct += (predicted == labels).sum().item()
-
-accuracy = 100 * correct / total
-print(f"Test Accuracy: {accuracy:.2f}%")
+# Run the training
+train_pointnet(dataset_folder, excel_path)
