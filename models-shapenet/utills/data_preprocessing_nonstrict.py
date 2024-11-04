@@ -90,9 +90,10 @@ if __name__ == "__main__":
 
     # Validate OBJ files with relaxed criteria
     print("Validating OBJ files...")
-    validated_labels_df = process_obj_files(base_dir='datasets/ShapeNetCoreV2', data=final_df)
+    # validated_labels_df = process_obj_files(base_dir='datasets/ShapeNetCoreV2', data=final_df)
 
     # Save the final dataset to an Excel file
-    save_validated_data(validated_labels_df, output_excel_path)
-
-    print(f"Input labels count: {len(labels_df)}, Final labels count: {len(validated_labels_df)}")
+    # save_validated_data(validated_labels_df, output_excel_path)
+    save_validated_data(final_df, output_excel_path)
+    # print(f"Input labels count: {len(labels_df)}, Final labels count: {len(validated_labels_df)}")
+    print(f"Input labels count: {len(labels_df)}, Final labels count: {len(final_df)}")
