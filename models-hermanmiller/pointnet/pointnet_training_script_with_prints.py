@@ -1,29 +1,52 @@
-
 import os
 import torch
 import torch.nn as nn
 import torch.optim as optim
 import numpy as np
-import trimesh
 import pandas as pd
-from sklearn.metrics import classification_report, accuracy_score
+from sklearn.metrics import (
+    accuracy_score, confusion_matrix, precision_score, 
+    recall_score, f1_score, classification_report
+)
+from sklearn.model_selection import train_test_split
+import trimesh
+from tqdm import tqdm
+
+# Configuration dictionary with updated settings
+config = {
+    "dataset_folder": "datasets/hermanmiller/obj-hermanmiller",
+    "label_file": "datasets/hermanmiller/label/Final_Validated_Regularity_Levels.xlsx",
+    "num_points": 1024,
+    "batch_size": 16,
+    "num_epochs": 50,          # Increased epochs
+    "learning_rate": 0.001,
+    "step_size": 15,           # Step size for learning rate scheduler
+    "gamma": 0.5,              # Learning rate decay factor
+    "device": "cuda" if torch.cuda.is_available() else "cpu",
+    "num_classes": 4
+}
+
+# Print configuration for reference (for a screenshot)
+print("\nConfiguration Settings:")
+for key, value in config.items():
+    print(f"{key}: {value}")
+print("\nMake sure to screenshot this configuration for reference.\n")
 
 # PointNet Model Definition with increased capacity
 class PointNet(nn.Module):
-    def __init__(self, k=4):
+    def __init__(self, k=config["num_classes"]):
         super(PointNet, self).__init__()
-        
-        self.conv1 = nn.Conv1d(3, 128, 1)  # Increased layer size
-        self.conv2 = nn.Conv1d(128, 256, 1)  # Increased layer size
-        self.conv3 = nn.Conv1d(256, 512, 1)  # Increased layer size
-        self.conv4 = nn.Conv1d(512, 1024, 1)  # Added extra layer
+        self.conv1 = nn.Conv1d(3, 128, 1)
+        self.conv2 = nn.Conv1d(128, 256, 1)
+        self.conv3 = nn.Conv1d(256, 512, 1)
+        self.conv4 = nn.Conv1d(512, 1024, 1)
         self.fc1 = nn.Linear(1024, 512)
         self.fc2 = nn.Linear(512, 256)
         self.fc3 = nn.Linear(256, k)
         
         self.relu = nn.ReLU()
-        self.maxpool = nn.MaxPool1d(1024)
-        self.dropout = nn.Dropout(p=0.4)  # Increased dropout to reduce overfitting
+        self.maxpool = nn.MaxPool1d(config["num_points"])
+        self.dropout = nn.Dropout(p=0.4)
     
     def forward(self, x):
         x = self.relu(self.conv1(x))
@@ -43,143 +66,102 @@ class PointNet(nn.Module):
         return x
 
 # Convert OBJ file to point cloud
-def obj_to_pointcloud(obj_path, num_points=1024):
-    mesh = trimesh.load(obj_path)
-    points = mesh.sample(num_points)
-    return points
+def obj_to_pointcloud(obj_path, num_points=config["num_points"]):
+    mesh = trimesh.load(obj_path, force='mesh')
+    if isinstance(mesh, trimesh.Trimesh):
+        points = mesh.sample(num_points)
+        return points
+    return None
 
-# Apply advanced data augmentation: jittering, random flipping, rotation, and scaling
-def augment_pointcloud(points):
-    # Apply random jittering (adding small noise)
-    jitter = np.random.normal(0, 0.02, size=points.shape)
-    points += jitter
-    
-    # Apply random rotation around the z-axis
-    theta = np.random.uniform(0, 2*np.pi)
-    rotation_matrix = np.array([[np.cos(theta), -np.sin(theta), 0],
-                                [np.sin(theta),  np.cos(theta), 0],
-                                [0,              0,             1]])
-    points = np.dot(points, rotation_matrix.T)
-    
-    # Apply random scaling
-    scale = np.random.uniform(0.8, 1.2)
-    points *= scale
-    
-    # Apply random flipping along the x-axis
-    if np.random.rand() > 0.5:
-        points[:, 0] = -points[:, 0]
-    
-    return points
-
-# Process the dataset to convert OBJ files into point clouds
-def process_dataset(dataset_folder, excel_data, num_points=1024):
-    print("Starting dataset extraction and point cloud conversion...")
+# Process the dataset to prepare point clouds
+def process_dataset(dataset_folder, labels_df):
     point_clouds = []
     labels = []
-    
-    for index, row in excel_data.iterrows():
+    for _, row in tqdm(labels_df.iterrows(), total=len(labels_df)):
         object_id = row['Object ID (Dataset Original Object ID)']
-        label = row['Final Regularity Level'] - 1  # Adjust label to be 0-based
+        label = row['Final Regularity Level'] - 1  # Adjust to 0-based labels
         
-        obj_folder = os.path.join(dataset_folder, object_id)
-        obj_file = os.path.join(obj_folder, f"{object_id}.obj")
-        
-        if os.path.exists(obj_file):
-            print(f"Processing {object_id}...")
-            point_cloud = obj_to_pointcloud(obj_file, num_points=num_points)
-            
-            # Apply advanced data augmentation
-            point_cloud = augment_pointcloud(point_cloud)
-            
-            point_clouds.append(point_cloud)
-            labels.append(label)
-    
-    print("Finished dataset processing.")
+        obj_file = os.path.join(dataset_folder, object_id.strip(), f"{object_id.strip()}.obj")
+        if os.path.isfile(obj_file):
+            point_cloud = obj_to_pointcloud(obj_file)
+            if point_cloud is not None:
+                point_clouds.append(point_cloud)
+                labels.append(label)
     return np.array(point_clouds), np.array(labels)
 
-# Main training loop
-def train_pointnet(dataset_folder, excel_path, num_epochs=30):  # Increased to 30 epochs
-    print("Loading Excel data...")
-    excel_data = pd.read_excel(excel_path)
+# Train PointNet
+def train_pointnet(config):
+    labels_df = pd.read_excel(config["label_file"])
     
-    # Preprocess dataset
-    point_clouds, labels = process_dataset(dataset_folder, excel_data)
+    # Process dataset
+    point_clouds, labels = process_dataset(config["dataset_folder"], labels_df)
+    
+    # Split dataset
+    X_train, X_test, y_train, y_test = train_test_split(
+        point_clouds, labels, test_size=0.2, random_state=42
+    )
     
     # Convert to tensors
-    point_clouds_tensor = torch.tensor(point_clouds, dtype=torch.float32)
-    labels_tensor = torch.tensor(labels, dtype=torch.long)
-    
-    # Define dataset
-    class PointCloudDataset(torch.utils.data.Dataset):
-        def __init__(self, point_clouds, labels):
-            self.point_clouds = point_clouds
-            self.labels = labels
-        
-        def __len__(self):
-            return len(self.point_clouds)
-        
-        def __getitem__(self, idx):
-            return self.point_clouds[idx], self.labels[idx]
-    
-    dataset = PointCloudDataset(point_clouds_tensor, labels_tensor)
-    dataloader = torch.utils.data.DataLoader(dataset, batch_size=4, shuffle=True)  # Increased batch size
-    
-    # Class weighting based on class frequencies
-    class_weights = torch.tensor([3.0, 0.8, 2.0, 1.0], dtype=torch.float32).to('cpu')  # Fine-tuned weights
+    X_train_tensor = torch.tensor(X_train, dtype=torch.float32).permute(0, 2, 1)
+    y_train_tensor = torch.tensor(y_train, dtype=torch.long)
+    X_test_tensor = torch.tensor(X_test, dtype=torch.float32).permute(0, 2, 1)
+    y_test_tensor = torch.tensor(y_test, dtype=torch.long)
+
+    # Create dataloaders
+    train_dataset = torch.utils.data.TensorDataset(X_train_tensor, y_train_tensor)
+    test_dataset = torch.utils.data.TensorDataset(X_test_tensor, y_test_tensor)
+    train_loader = torch.utils.data.DataLoader(train_dataset, batch_size=config["batch_size"], shuffle=True)
+    test_loader = torch.utils.data.DataLoader(test_dataset, batch_size=config["batch_size"], shuffle=False)
     
     # Initialize model, optimizer, and loss function
-    print("Initializing PointNet model...")
-    device = torch.device("cpu")
-    model = PointNet(k=4).to(device)
-    optimizer = optim.Adam(model.parameters(), lr=0.001)
-    criterion = nn.CrossEntropyLoss(weight=class_weights)
+    device = config["device"]
+    model = PointNet(k=config["num_classes"]).to(device)
+    optimizer = optim.Adam(model.parameters(), lr=config["learning_rate"])
+    criterion = nn.CrossEntropyLoss(weight=torch.tensor([3.0, 0.8, 2.0, 1.0]).to(device))  # Adjust class weights
     
     # Learning rate scheduler
-    scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=10, gamma=0.5)  # Reduce LR every 10 epochs
+    scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=config["step_size"], gamma=config["gamma"])
     
-    print("Starting training...")
-    # Training loop
-    for epoch in range(num_epochs):
+    # Training
+    model.train()
+    for epoch in range(config["num_epochs"]):
         running_loss = 0.0
-        for inputs, target in dataloader:
-            inputs = inputs.transpose(2, 1)
+        for inputs, labels in train_loader:
+            inputs, labels = inputs.to(device), labels.to(device)
             optimizer.zero_grad()
             outputs = model(inputs)
-            loss = criterion(outputs, target)
+            loss = criterion(outputs, labels)
             loss.backward()
             optimizer.step()
-        scheduler.step()  # Update learning rate
-        
-        print(f"Epoch [{epoch+1}/{num_epochs}], Loss: {loss.item():.4f}")
+            running_loss += loss.item()
+        scheduler.step()
+        print(f"Epoch {epoch+1}/{config['num_epochs']}, Loss: {running_loss/len(train_loader):.4f}")
     
-    print("Training completed!")
-    
-    # Evaluation phase
-    print("Starting evaluation...")
-    model.eval()  # Set the model to evaluation mode
-    
+    # Evaluation
+    model.eval()
     all_preds = []
     all_labels = []
-    
     with torch.no_grad():
-        for inputs, labels in dataloader:
-            inputs = inputs.transpose(2, 1)
+        for inputs, labels in test_loader:
+            inputs, labels = inputs.to(device), labels.to(device)
             outputs = model(inputs)
             _, preds = torch.max(outputs, 1)
             all_preds.extend(preds.cpu().numpy())
             all_labels.extend(labels.cpu().numpy())
     
-    # Accuracy
+    # Metrics with zero_division=1 to suppress warnings
     accuracy = accuracy_score(all_labels, all_preds)
-    print(f"Accuracy: {accuracy:.4f}")
-    
-    # Classification report
-    report = classification_report(all_labels, all_preds, target_names=["Class 0", "Class 1", "Class 2", "Class 3"])
-    print("Classification Report:")
-    print(report)
-    
-# Example usage
+    conf_matrix = confusion_matrix(all_labels, all_preds)
+    precision = precision_score(all_labels, all_preds, average="weighted", zero_division=1)
+    recall = recall_score(all_labels, all_preds, average="weighted", zero_division=1)
+    f1 = f1_score(all_labels, all_preds, average="weighted", zero_division=1)
+    print(f"Accuracy: {accuracy:.2f}")
+    print("Confusion Matrix:\n", conf_matrix)
+    print(f"Precision: {precision:.2f}")
+    print(f"Recall: {recall:.2f}")
+    print(f"F1 Score: {f1:.2f}")
+    print("\nClassification Report:")
+    print(classification_report(all_labels, all_preds, target_names=["Class 0", "Class 1", "Class 2", "Class 3"], zero_division=1))
+
 if __name__ == "__main__":
-    dataset_folder = "datasets/hermanmiller/obj-hermanmiller"
-    excel_path = "datasets/hermanmiller/label/Final_Validated_Regularity_Levels.xlsx"
-    train_pointnet(dataset_folder, excel_path)
+    train_pointnet(config)

@@ -4,7 +4,7 @@ import numpy as np
 import trimesh
 
 # Load the raw label data
-excel_path = 'datasets\ikea\label\ikea.xlsx'
+excel_path = 'datasets/IKEA/label/ikea.xlsx'
 data = pd.read_excel(excel_path)
 
 # Function to determine the final regularity level
@@ -97,7 +97,7 @@ def save_validated_data(validated_labels_df, output_file_path='datasets/ikea/lab
 
 # Main script execution
 if __name__ == "__main__":
-    base_dir = 'datasets/ikea/obj-IKEA'
+    base_dir = 'datasets/IKEA/obj-IKEA'
 
     # Process the dataset to validate OBJ files
     validated_labels_df = process_obj_files(base_dir, data, augment=True)

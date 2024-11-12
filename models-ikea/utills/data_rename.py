@@ -16,7 +16,7 @@ def get_target_folder(base_dir, folder_name, object_id):
     return os.path.normpath(os.path.join(*path_parts))
 
 # Base directory where the folders are located
-base_dir = 'datasets/ikea/obj-IKEA'  # Replace with the actual base directory
+base_dir = 'datasets/IKEA/obj-IKEA'  # Replace with the actual base directory
 
 # Extract folder data from the Excel file
 folders = list(zip(data['FolderName'], data['Object ID (Dataset Original Object ID)']))

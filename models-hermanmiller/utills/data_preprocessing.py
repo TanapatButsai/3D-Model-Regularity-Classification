@@ -4,7 +4,7 @@ import numpy as np
 import trimesh
 
 # Load the raw label data
-excel_path = 'datasets\hermanmiller\label\HermanMiller.xlsx'
+excel_path = 'datasets/hermanmiller/label/HermanMiller.xlsx'
 data = pd.read_excel(excel_path)
 
 # Function to determine the final regularity level
@@ -37,32 +37,32 @@ data = data[data['Final Regularity Level'] > 0]
 # Display the length of data before cleaning
 print(f"Number of data points before cleaning: {len(data)}")
 
+# Modified function to load and validate OBJ files
 def load_and_validate_obj_file(file_path):
     """
     Load and validate an OBJ file to check for integrity.
     Returns vertices if the file is valid, otherwise returns None.
-    Also checks if the file exists for 3D model classification.
     """
     if not os.path.exists(file_path):
         print(f"File not found: {file_path}")
         return None
     
     try:
-        mesh = trimesh.load(file_path)
-        # Only accept if the loaded object is a Mesh
-        if not isinstance(mesh, trimesh.Trimesh):
+        # Attempt to load as a mesh and ignore scenes or other data
+        mesh = trimesh.load(file_path, force='mesh')
+        
+        # Check if the loaded object is a valid Trimesh instance
+        if isinstance(mesh, trimesh.Trimesh) and len(mesh.vertices) > 0:
+            return mesh.vertices
+        else:
             print(f"Skipping file {file_path}: Not a valid Mesh object.")
             return None
         
-        vertices = mesh.vertices
-        if len(vertices) == 0:
-            print(f"Skipping file {file_path}: No vertices found.")
-            return None
-        return vertices
     except Exception as e:
         print(f"Error loading file {file_path}: {e}")
         return None
 
+# Function to process OBJ files and filter valid entries
 def process_obj_files(base_dir, data, augment=False):
     """
     Process all OBJ files, validate them, and apply augmentations if specified.
@@ -84,6 +84,7 @@ def process_obj_files(base_dir, data, augment=False):
     validated_labels_df['Count No.'] = validated_labels_df.index + 1
     return validated_labels_df
 
+# Function to save the validated data to an Excel file
 def save_validated_data(validated_labels_df, output_file_path='datasets/hermanmiller/label/Final_Validated_Regularity_Levels.xlsx'):
     """
     Save the validated labels to an Excel file.

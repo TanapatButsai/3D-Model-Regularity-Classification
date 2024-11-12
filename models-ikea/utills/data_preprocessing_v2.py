@@ -4,7 +4,7 @@ import numpy as np
 import trimesh
 
 # Load the raw label data
-excel_path = 'datasets\ikea\label\ikea.xlsx'
+excel_path = 'datasets/IKEA/label/ikea.xlsx'
 data = pd.read_excel(excel_path)
 
 # Function to determine the final regularity level
@@ -41,19 +41,29 @@ def load_and_validate_obj_file(file_path):
     """
     Load and validate an OBJ file to check for integrity.
     Returns vertices if the file is valid, otherwise returns None.
-    Also checks if the file exists for 3D model classification.
     """
     if not os.path.exists(file_path):
         print(f"File not found: {file_path}")
         return None
     
     try:
-        mesh = trimesh.load(file_path)
-        # Only accept if the loaded object is a Mesh
-        if not isinstance(mesh, trimesh.Trimesh):
-            print(f"Skipping file {file_path}: Not a valid Mesh object.")
+        loaded_obj = trimesh.load(file_path)
+        
+        # If it's a Scene, merge all geometries into a single mesh
+        if isinstance(loaded_obj, trimesh.Scene):
+            if loaded_obj.geometry:
+                # Merge geometries in the Scene
+                mesh = trimesh.util.concatenate(loaded_obj.geometry.values())
+            else:
+                print(f"Scene has no geometries: {file_path}")
+                return None
+        elif isinstance(loaded_obj, trimesh.Trimesh):
+            mesh = loaded_obj
+        else:
+            print(f"Skipping file {file_path}: Not a valid Mesh or Scene object.")
             return None
         
+        # Validate the mesh by checking vertices
         vertices = mesh.vertices
         if len(vertices) == 0:
             print(f"Skipping file {file_path}: No vertices found.")
@@ -94,7 +104,7 @@ def save_validated_data(validated_labels_df, output_file_path='datasets/ikea/lab
 
 # Main script execution
 if __name__ == "__main__":
-    base_dir = 'datasets/ikea/obj-IKEA'
+    base_dir = 'datasets/IKEA/obj-IKEA'
 
     # Process the dataset to validate OBJ files
     validated_labels_df = process_obj_files(base_dir, data, augment=True)
