@@ -6,8 +6,9 @@ import numpy as np
 import pandas as pd
 from sklearn.metrics import (
     accuracy_score, confusion_matrix, precision_score, 
-    recall_score, f1_score, classification_report
+    recall_score, f1_score, classification_report, roc_auc_score, log_loss
 )
+from sklearn.preprocessing import LabelBinarizer
 from sklearn.model_selection import train_test_split
 import trimesh
 from tqdm import tqdm
@@ -26,13 +27,12 @@ config = {
     "num_classes": 4
 }
 
-# Print configuration for reference (for a screenshot)
+# Print configuration for reference
 print("\nConfiguration Settings:")
 for key, value in config.items():
     print(f"{key}: {value}")
 print("\nMake sure to screenshot this configuration for reference.\n")
 
-# PointNet Model Definition with increased capacity
 class PointNet(nn.Module):
     def __init__(self, k=config["num_classes"]):
         super(PointNet, self).__init__()
@@ -117,7 +117,7 @@ def train_pointnet(config):
     device = config["device"]
     model = PointNet(k=config["num_classes"]).to(device)
     optimizer = optim.Adam(model.parameters(), lr=config["learning_rate"])
-    criterion = nn.CrossEntropyLoss(weight=torch.tensor([3.0, 0.8, 2.0, 1.0]).to(device))  # Adjust class weights
+    criterion = nn.CrossEntropyLoss(weight=torch.tensor([3.0, 0.8, 2.0, 1.0]).to(device))
     
     # Learning rate scheduler
     scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=config["step_size"], gamma=config["gamma"])
@@ -141,25 +141,38 @@ def train_pointnet(config):
     model.eval()
     all_preds = []
     all_labels = []
+    all_probs = []
     with torch.no_grad():
         for inputs, labels in test_loader:
             inputs, labels = inputs.to(device), labels.to(device)
             outputs = model(inputs)
+            probs = torch.softmax(outputs, dim=1).cpu().numpy()
             _, preds = torch.max(outputs, 1)
             all_preds.extend(preds.cpu().numpy())
             all_labels.extend(labels.cpu().numpy())
+            all_probs.extend(probs)
     
-    # Metrics with zero_division=1 to suppress warnings
+    # Metrics
     accuracy = accuracy_score(all_labels, all_preds)
     conf_matrix = confusion_matrix(all_labels, all_preds)
     precision = precision_score(all_labels, all_preds, average="weighted", zero_division=1)
     recall = recall_score(all_labels, all_preds, average="weighted", zero_division=1)
     f1 = f1_score(all_labels, all_preds, average="weighted", zero_division=1)
+
+    # Binarize labels for AUC-ROC and Log Loss
+    lb = LabelBinarizer()
+    all_labels_binarized = lb.fit_transform(all_labels)
+    auc_roc = roc_auc_score(all_labels_binarized, np.array(all_probs), average="weighted", multi_class="ovr")
+    logloss = log_loss(all_labels, np.array(all_probs))
+    
     print(f"Accuracy: {accuracy:.2f}")
     print("Confusion Matrix:\n", conf_matrix)
     print(f"Precision: {precision:.2f}")
     print(f"Recall: {recall:.2f}")
     print(f"F1 Score: {f1:.2f}")
+    print(f"AUC-ROC: {auc_roc:.2f}")
+    print(f"Log Loss: {logloss:.2f}")
+    
     print("\nClassification Report:")
     print(classification_report(all_labels, all_preds, target_names=["Class 0", "Class 1", "Class 2", "Class 3"], zero_division=1))
 
