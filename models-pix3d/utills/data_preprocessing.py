@@ -2,142 +2,134 @@ import os
 import pandas as pd
 import numpy as np
 import trimesh
-
-# Load the raw label data
-excel_path = 'datasets\pix3d\label\pix3d.xlsx'
-data = pd.read_excel(excel_path)
-
-data.columns = data.columns.str.replace(r'\s+', ' ', regex=True).str.strip()
+from tqdm import tqdm
 
 def determine_final_level(row):
-    # List of persons and their corresponding layout levels and confidence columns
-    persons = ['Person 1', 'Person 2', 'Person 3', 'Person 4']
-    levels = []
-    confidences = []
+    try:
+        # List persons and their layout level columns and confidence columns
+        persons = ['Person 1', 'Person 2', 'Person 3', 'Person 4']
+        levels = []
+        confidences = []
 
-    # Extract levels and confidences if columns exist
-    for person in persons:
-        level_col = f'Layout level ({person})'
-        conf_col = f'Layout level confident ({person})'
+        # Extract layout levels and confidences
+        for person in persons:
+            level_col = f'Layout level ({person})'
+            conf_col = f'Layout level confident ({person})'
 
-        if level_col in row.index and conf_col in row.index:
-            level = row[level_col]
-            confidence = row[conf_col]
+            if level_col in row.index and conf_col in row.index:
+                level = row[level_col]
+                confidence = row[conf_col]
 
-            if not pd.isna(level) and not pd.isna(confidence):
-                levels.append(level)
-                confidences.append(confidence)
+                if not pd.isna(level) and not pd.isna(confidence):
+                    levels.append(level)
+                    confidences.append(confidence)
 
-    if not levels:
-        return None  # No valid values to determine a level
+        if not levels:
+            return None  # No valid levels
 
-    # Find the maximum confidence
-    max_confidence = max(confidences)
-    
-    # If there's only one max confidence, return the corresponding level
-    max_indices = [i for i, c in enumerate(confidences) if c == max_confidence]
-    if len(max_indices) == 1:
+        # Use the level with the highest confidence
+        max_confidence = max(confidences)
+        max_indices = [i for i, c in enumerate(confidences) if c == max_confidence]
+
+        if len(max_indices) == 1:
+            return levels[max_indices[0]]
+        
+        # If multiple levels share max confidence of 1, take average
+        if max_confidence == 1:
+            return round(sum(levels) / len(levels))
+
+        # Otherwise, return the first level with max confidence
         return levels[max_indices[0]]
 
-    # If multiple levels have the same confidence of 1, take the rounded average
-    if max_confidence == 1:
-        return round(sum(levels) / len(levels))
-
-    # Otherwise, if there are ties but the confidence isn't 1, return the first level with max confidence
-    return levels[max_indices[0]]
-
-# Apply the function to create the 'Final Regularity Level' column
-data['Final Regularity Level'] = data.apply(determine_final_level, axis=1)
-
-# Display the length of data after cleaning
-print(f"Number of data points after cleaning: {len(data)}")
-
-import os
-import trimesh
+    except (ValueError, TypeError):
+        return None
 
 def load_and_validate_obj_file(file_path):
     """
     Load and validate an OBJ file to check for integrity.
-    Returns a mesh if the file is valid, otherwise returns None.
-    Performs checks for file existence, valid mesh object, 
-    non-empty vertices, faces, surface area, and volume.
+    Returns vertices if the file is valid, otherwise returns None.
     """
-    # Check if the file exists
     if not os.path.exists(file_path):
-        print(f"File not found: {file_path}")
-        return None
-
-    try:
-        # Load the mesh
-        mesh = trimesh.load(file_path)
-
-        # Validate if loaded object is a Trimesh instance (i.e., a valid mesh)
-        if not isinstance(mesh, trimesh.Trimesh):
-            print(f"Skipping file {file_path}: Not a valid Mesh object.")
-            return None
-
-        # Check if the mesh has vertices
-        if len(mesh.vertices) == 0:
-            print(f"Skipping file {file_path}: No vertices found.")
-            return None
-
-        # Check if the mesh has faces
-        if len(mesh.faces) == 0:
-            print(f"Skipping file {file_path}: No faces found.")
-            return None
-
-        # Check if the mesh has non-zero surface area
-        if mesh.area <= 0:
-            print(f"Skipping file {file_path}: Surface area is zero or negative.")
-            return None
-
-        # Check if the mesh has non-zero volume (helps ensure the mesh is closed)
-        if mesh.volume <= 0:
-            print(f"Skipping file {file_path}: Volume is zero or negative.")
-            return None
-
-        # If all checks pass, return the mesh
-        return mesh
-
-    except Exception as e:
-        print(f"Error loading file {file_path}: {e}")
-        return None
+        return None, f"File not found: {file_path}"
     
-def process_obj_files(base_dir, data, augment=False):
+    try:
+        mesh = trimesh.load(file_path)
+        if isinstance(mesh, trimesh.Scene) and mesh.geometry:
+            mesh = list(mesh.geometry.values())[0]
+        
+        vertices = mesh.vertices
+        if len(vertices) == 0:
+            return None, f"Skipping file {file_path}: No vertices found."
+        return vertices, None
+    except Exception as e:
+        return None, f"Error loading file {file_path}: {e}"
+
+def process_obj_files(base_dir, data):
     """
-    Process all OBJ files, validate them, and apply augmentations if specified.
+    Process all OBJ files and validate them.
     """
     validated_labels = []
+    error_messages = []
 
-    for index, row in data.iterrows():
-        first_layer_folder = str('models').strip()
-        second_layer_folder = str(row['Object ID (Dataset Original Object ID)']).strip()
-        obj_filename = 'model'
-        obj_file_path = os.path.join(base_dir, first_layer_folder, f"{second_layer_folder}", f"{obj_filename}.obj")
+    for index, row in tqdm(data.iterrows(), total=data.shape[0], desc="Processing OBJ files"):
+        layer_folder = str(row['Object ID (Dataset Original Object ID)']).strip()
+        obj_file_path = os.path.join(base_dir, 'models', layer_folder.strip(), "model.obj")
 
-        vertices = load_and_validate_obj_file(obj_file_path)
+        vertices, error_message = load_and_validate_obj_file(obj_file_path)
         if vertices is not None:
             validated_labels.append(row)
+        else:
+            if error_message:
+                error_messages.append(error_message)
 
-    # Create a new DataFrame with validated labels only
+    # Print error messages after processing
+    for message in error_messages:
+        tqdm.write(message)
+
+    # Create a DataFrame with validated labels
     validated_labels_df = pd.DataFrame(validated_labels)
     validated_labels_df.reset_index(drop=True, inplace=True)
     validated_labels_df['Count No.'] = validated_labels_df.index + 1
     return validated_labels_df
 
-def save_validated_data(validated_labels_df, output_file_path='datasets/pix3d/label/Final_Validated_Regularity_Levels.xlsx'):
-    """
-    Save the validated labels to an Excel file.
-    """
+def check_mesh_level_classification(base_dir, excel_path):
+    # Load Excel data with mesh information
+    try:
+        data = pd.read_excel(excel_path)
+    except FileNotFoundError:
+        print(f"Error: The file '{excel_path}' does not exist.")
+        return False
+    except Exception as e:
+        print(f"Error: {e}")
+        return False
+
+    # Apply final layout level determination
+    data['Final Layout Level'] = data.apply(determine_final_level, axis=1)
+    data = data.dropna(subset=['Final Layout Level'])
+    data['Final Layout Level'] = data['Final Layout Level'].astype(int)
+    data = data[data['Final Layout Level'] > 0]
+
+    # Process OBJ files
+    validated_labels_df = process_obj_files(base_dir, data)
+
+    # Save validated labels to Excel
+    output_file_path = 'datasets/pix3d/label/Final_Validated_Regularity_Levels.xlsx'
     validated_labels_df.to_excel(output_file_path, index=False)
     print(f"Validated data saved to {output_file_path}")
 
-# Main script execution
+    # Summary
+    total_files = data.shape[0]
+    validated_count = len(validated_labels_df)
+    failed_count = total_files - validated_count
+    print("\nSummary:")
+    print(f"Total files processed: {total_files}")
+    print(f"Successfully validated files: {validated_count}")
+    print(f"Failed validations: {failed_count}")
+
+    return validated_labels_df
+
+# Example usage
 if __name__ == "__main__":
-    base_dir = 'datasets\pix3d\obj-pix3d'
-
-    # Process the dataset to validate OBJ files
-    validated_labels_df = process_obj_files(base_dir, data, augment=True)
-
-    # Save the validated labels to the final Excel file
-    save_validated_data(validated_labels_df, 'datasets/pix3d/label/Final_Validated_Regularity_Levels.xlsx')
+    base_dir = "datasets/pix3d/obj-pix3d"
+    excel_path = 'datasets/pix3d/label/pix3d.xlsx'
+    check_mesh_level_classification(base_dir, excel_path)
