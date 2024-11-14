@@ -15,6 +15,7 @@ import trimesh
 from tqdm import tqdm
 
 # Configuration settings
+# Configuration settings
 config = {
     "dataset_folder": "datasets/hermanmiller/obj-hermanmiller",
     "label_file": "datasets/hermanmiller/label/Final_Validated_Regularity_Levels.xlsx",
@@ -27,7 +28,8 @@ config = {
     "gamma": 0.5,
     "device": "cuda" if torch.cuda.is_available() else "cpu",
     "num_classes": 4,
-    "class_weights": [1.5, 1.5, 1.8, 1.0]
+    "class_weights": [1.5, 1.5, 1.8, 1.0],
+    "num_samples": 500  # Limit the number of samples for testing
 }
 
 print("Configuration Settings:")
@@ -47,29 +49,27 @@ class SetAbstraction(nn.Module):
         self.maxpool = nn.MaxPool1d(self.num_sampled_points)
 
     def forward(self, x):
-        # Randomly sample points (downsampling) for each set abstraction layer
-        indices = torch.randperm(x.size(-1))[:self.num_sampled_points]
-        x = x[:, :, indices]  # Downsample points
-
+        if x.dim() == 3:
+            indices = torch.randperm(x.size(2))[:self.num_sampled_points]
+            x = x[:, :, indices]
         x = F.relu(self.bn1(self.conv1(x)))
         x = F.relu(self.bn2(self.conv2(x)))
-        x = self.maxpool(x).squeeze(-1)  # Global feature vector
+        x = self.maxpool(x).squeeze(-1)
         return x
 
-# PointNet++ Model with sampling at each abstraction layer
+# PointNet++ Model with corrected channels
 class PointNetPlusPlus(nn.Module):
     def __init__(self, num_classes):
         super(PointNetPlusPlus, self).__init__()
-        # Each SetAbstraction layer downsamples points and increases feature depth
-        self.sa1 = SetAbstraction(3, 64, num_points=1024, sample_ratio=0.5)   # 1024 -> 512 points
-        self.sa2 = SetAbstraction(64, 128, num_points=512, sample_ratio=0.25) # 512 -> 128 points
+        self.sa1 = SetAbstraction(3, 64, num_points=1024, sample_ratio=0.5)  # Input channels: 3, Output channels: 64
+        self.sa2 = SetAbstraction(64, 128, num_points=512, sample_ratio=0.25)  # Input channels: 64, Output channels: 128
         self.fc1 = nn.Linear(128, 64)
         self.fc2 = nn.Linear(64, num_classes)
         self.dropout = nn.Dropout(p=0.4)
 
     def forward(self, x):
-        x = self.sa1(x)
-        x = self.sa2(x)
+        x = self.sa1(x)  # Produces output with 64 channels
+        x = self.sa2(x)  # Produces output with 128 channels
         x = F.relu(self.fc1(x))
         x = self.dropout(x)
         x = self.fc2(x)
@@ -89,11 +89,11 @@ def obj_to_pointcloud(obj_path, num_points=config["num_points"]):
         return points
     return None
 
-# Load dataset
-def process_dataset(dataset_folder, labels_df):
+# Load dataset with num_samples limit
+def process_dataset(dataset_folder, labels_df, num_samples):
     point_clouds = []
     labels = []
-    for _, row in tqdm(labels_df.iterrows(), total=len(labels_df)):
+    for _, row in tqdm(labels_df.iterrows(), total=min(num_samples, len(labels_df))):
         object_id = row['Object ID (Dataset Original Object ID)']
         label = row['Final Regularity Level'] - 1
         obj_file = os.path.join(dataset_folder, object_id.strip(), f"{object_id.strip()}.obj")
@@ -102,25 +102,24 @@ def process_dataset(dataset_folder, labels_df):
             if point_cloud is not None:
                 point_clouds.append(point_cloud)
                 labels.append(label)
+        if len(point_clouds) >= num_samples:
+            break
     return np.array(point_clouds), np.array(labels)
 
 # Training function
 def train_pointnetplusplus(config):
     labels_df = pd.read_excel(config["label_file"])
-    point_clouds, labels = process_dataset(config["dataset_folder"], labels_df)
+    point_clouds, labels = process_dataset(config["dataset_folder"], labels_df, config["num_samples"])
     
-    # Split dataset
     X_train, X_test, y_train, y_test = train_test_split(
         point_clouds, labels, test_size=0.2, random_state=42
     )
     
-    # Convert to tensors
     X_train_tensor = torch.tensor(X_train, dtype=torch.float32).permute(0, 2, 1)
     y_train_tensor = torch.tensor(y_train, dtype=torch.long)
     X_test_tensor = torch.tensor(X_test, dtype=torch.float32).permute(0, 2, 1)
     y_test_tensor = torch.tensor(y_test, dtype=torch.long)
 
-    # Create dataloaders
     train_dataset = torch.utils.data.TensorDataset(X_train_tensor, y_train_tensor)
     test_dataset = torch.utils.data.TensorDataset(X_test_tensor, y_test_tensor)
     train_loader = torch.utils.data.DataLoader(train_dataset, batch_size=config["batch_size"], shuffle=True)
@@ -132,7 +131,6 @@ def train_pointnetplusplus(config):
     criterion = nn.CrossEntropyLoss(weight=torch.tensor(config["class_weights"]).to(device))
     scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=config["step_size"], gamma=config["gamma"])
     
-    # Training loop
     model.train()
     for epoch in range(config["num_epochs"]):
         running_loss = 0.0
@@ -147,7 +145,6 @@ def train_pointnetplusplus(config):
         scheduler.step()
         print(f"Epoch {epoch+1}/{config['num_epochs']}, Loss: {running_loss/len(train_loader):.4f}")
 
-    # Evaluation
     model.eval()
     all_preds, all_labels, all_probas = [], [], []
     with torch.no_grad():
@@ -160,7 +157,6 @@ def train_pointnetplusplus(config):
             all_labels.extend(labels.cpu().numpy())
             all_probas.extend(probs.cpu().numpy())
     
-    # Metrics
     accuracy = accuracy_score(all_labels, all_preds)
     conf_matrix = confusion_matrix(all_labels, all_preds)
     precision = precision_score(all_labels, all_preds, average="weighted", zero_division=1)
@@ -181,5 +177,4 @@ def train_pointnetplusplus(config):
     print("\nClassification Report:")
     print(classification_report(all_labels, all_preds, target_names=[f"Class {i}" for i in range(config["num_classes"])], zero_division=1))
 
-# Run the training
 train_pointnetplusplus(config)
