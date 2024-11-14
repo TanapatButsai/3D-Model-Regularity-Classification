@@ -2,6 +2,7 @@ import os
 import pandas as pd
 import numpy as np
 import trimesh
+from tqdm import tqdm
 
 # Load the raw label data
 file_path = 'datasets/3d-future-dataset/label/3D-FUTURE-Layout.xlsx'  # Path to the original Excel file
@@ -13,15 +14,15 @@ def determine_final_level(row):
         return row['Layout level (Person 2)']
     elif pd.isna(row['Layout level (Person 2)']):
         return row['Layout level (Person 1)']
-
+    
     if row['Layout level confident (Person 1)'] > row['Layout level confident (Person 2)']:
         return row['Layout level (Person 1)']
     elif row['Layout level confident (Person 2)'] > row['Layout level confident (Person 1)']:
         return row['Layout level (Person 2)']
-
+    
     if row['Layout level confident (Person 1)'] == 1 and row['Layout level confident (Person 2)'] == 1:
         return round((row['Layout level (Person 1)'] + row['Layout level (Person 2)']) / 2)
-
+    
     return row['Layout level (Person 1)']
 
 # Apply the function to create the 'Final Regularity Level' column
@@ -37,14 +38,18 @@ labels_df = labels_df[labels_df['Final Regularity Level'] > 0]
 # Display the length of data before cleaning
 print(f"Number of data points before cleaning: {len(labels_df)}")
 
-# Function to load and validate OBJ files
+# Function to load and validate OBJ files (only meshes, not scenes)
 def load_and_validate_obj_file(file_path):
     """
     Load and validate an OBJ file to check for integrity.
-    Returns vertices if the file is valid, otherwise returns None.
+    Returns vertices if the file is a valid mesh, otherwise returns None.
     """
     try:
         mesh = trimesh.load(file_path)
+        # Ignore scenes, process only single mesh objects
+        if isinstance(mesh, trimesh.Scene):
+            print(f"Skipping file {file_path}: Scene objects are ignored.")
+            return None
         vertices = mesh.vertices
         if len(vertices) == 0:
             print(f"Skipping file {file_path}: No vertices found.")
@@ -56,11 +61,11 @@ def load_and_validate_obj_file(file_path):
 
 def process_obj_files(base_dir, labels_df, augment=False):
     """
-    Process all OBJ files, validate them, and apply augmentations if specified.
+    Process all OBJ files with a progress bar, validate them, and apply augmentations if specified.
     """
     validated_labels = []
 
-    for index, row in labels_df.iterrows():
+    for index, row in tqdm(labels_df.iterrows(), total=len(labels_df), desc="Processing OBJ files", leave=True):
         obj_id = row['Object ID (Dataset Original Object ID)']
         obj_file_path = os.path.join(base_dir, obj_id, 'normalized_model.obj')
 
@@ -81,7 +86,7 @@ def save_validated_data(validated_labels_df, output_file_path='datasets/3d-futur
 
 # Main script execution
 if __name__ == "__main__":
-    base_dir = 'datasets/3d-future-dataset/objs'
+    base_dir = 'datasets/3d-future-dataset/obj-3d-future-dataset'
 
     # Process the dataset to validate OBJ files
     validated_labels_df = process_obj_files(base_dir, labels_df, augment=True)

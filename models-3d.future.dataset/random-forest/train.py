@@ -1,33 +1,34 @@
-import pandas as pd
-import trimesh
 import os
-import time
+import pandas as pd
 import numpy as np
+import trimesh
 from sklearn.ensemble import RandomForestClassifier
+from xgboost import XGBClassifier
 from sklearn.model_selection import train_test_split, GridSearchCV
-from sklearn.metrics import accuracy_score, classification_report, confusion_matrix
+from sklearn.metrics import (
+    accuracy_score, classification_report, confusion_matrix,
+    precision_score, recall_score, f1_score, roc_auc_score, log_loss
+)
 from sklearn.preprocessing import StandardScaler
 from imblearn.over_sampling import SMOTE
+from tqdm import tqdm
+from sklearn.ensemble import VotingClassifier
 
 # Configuration
-base_dir = 'datasets/3d-future-dataset/3D-FUTURE-model' # obj dir location
-file_path = "datasets/3d-future-dataset/label/Final_Validated_Regularity_Levels.xlsx" #label location
+base_dir = 'datasets/3d-future-dataset/obj-3d-future-dataset'
+file_path = "datasets/3d-future-dataset/label/Final_Validated_Regularity_Levels.xlsx"
 
-# Step 1: Load and Clean the Excel Data
+# Load and preprocess the data
 labels_df = pd.read_excel(file_path)
 MAX_DATA_POINTS = 3000
-
-# Limit the dataset for testing
 final_labels_df = labels_df[['Object ID (Dataset Original Object ID)', 'Final Regularity Level']]
 final_labels_df = final_labels_df.sample(n=min(MAX_DATA_POINTS, len(final_labels_df)), random_state=42)
 
-# Step 2: Extract Features from Normalized 3D OBJ Files
+# Feature extraction function
 def extract_features_from_obj(obj_file):
     try:
         mesh = trimesh.load(obj_file)
         if not hasattr(mesh, 'vertices'):
-            print(f'\rSkipping file {obj_file}: No vertices found.{" " * 20}', end='', flush=True)
-            time.sleep(0.2)
             return [None] * 6
 
         num_vertices = len(mesh.vertices)
@@ -40,109 +41,84 @@ def extract_features_from_obj(obj_file):
         
         return [num_vertices, num_faces, surface_area, volume, bounding_box_volume, aspect_ratio]
 
-    except Exception as e:
-        print(f'\rError processing file {obj_file}: {e}{" " * 20}', end='', flush=True)
-        time.sleep(0.2)
+    except Exception:
         return [None] * 6
 
-# Custom loading bar function with updates every 0.1%, starting at 0%
-def loading_bar(iteration, total, prefix='', suffix='', length=50, fill='#'):
-    percent = 100 * (iteration / float(total))
-    if percent % 0.1 < (100 / total) or iteration == total or iteration == 1:
-        filled_length = int(length * iteration // total)
-        bar = fill * filled_length + '-' * (length - filled_length)
-        print(f'\r{prefix} |{bar}| {percent:.1f}% {suffix}', end='', flush=True)
-        if iteration == total:
-            print()
-
-
+# Extract features
 features_list = []
 object_ids = []
 
-# Loop through each folder and extract features from the normalized_model.obj file
-total_rows = len(final_labels_df)
-print(f"Training Data: {MAX_DATA_POINTS}")
-for index, row in enumerate(final_labels_df.iterrows(), start=1):
-    loading_bar(index, total_rows, prefix="Extracting Features from OBJ Files")
-
-    _, row_data = row
-    model_folder = os.path.join(base_dir, str(row_data['Object ID (Dataset Original Object ID)']))
+for index, row in tqdm(final_labels_df.iterrows(), total=len(final_labels_df), desc="Processing OBJ Files"):
+    obj_id = row['Object ID (Dataset Original Object ID)']
+    model_folder = os.path.join(base_dir, str(obj_id))
     normalized_model_file = os.path.join(model_folder, 'normalized_model.obj')
 
     if os.path.exists(normalized_model_file):
         features = extract_features_from_obj(normalized_model_file)
         features_list.append(features)
-        object_ids.append(row_data['Object ID (Dataset Original Object ID)'])
-
-# Print a final new line to ensure the console looks clean after progress
-print()
+        object_ids.append(obj_id)
 
 features_df = pd.DataFrame(features_list, columns=['Num Vertices', 'Num Faces', 'Surface Area', 'Volume', 'Bounding Box Volume', 'Aspect Ratio'])
 final_labels_df = final_labels_df[final_labels_df['Object ID (Dataset Original Object ID)'].isin(object_ids)]
 dataset_df = pd.concat([features_df, final_labels_df['Final Regularity Level']], axis=1)
 dataset_df = dataset_df.dropna()
 
-# Step 3: Preprocessing and Balancing
+# Preprocess and balance data
 X = dataset_df.drop('Final Regularity Level', axis=1)
 y = dataset_df['Final Regularity Level']
-
 scaler = StandardScaler()
 X = scaler.fit_transform(X)
 
 smote = SMOTE(random_state=42)
 X_resampled, y_resampled = smote.fit_resample(X, y)
-
 X_train, X_test, y_train, y_test = train_test_split(X_resampled, y_resampled, test_size=0.2, random_state=42)
 
-# Step 4: Hyperparameter Tuning with GridSearchCV
-clf = RandomForestClassifier(random_state=42, class_weight='balanced')
-
-param_grid = {
-    'n_estimators': [100, 200, 500],
-    'max_depth': [10, 20, 30, None],
-    'min_samples_split': [2, 5, 10],
-    'min_samples_leaf': [1, 2, 4],
-    'max_features': ['sqrt', 'log2', None]
+# Hyperparameter Tuning for XGBoost and RandomForest
+tuned_params_rf = {
+    'n_estimators': [100, 300],
+    'max_depth': [10, 30, None]
+}
+tuned_params_xgb = {
+    'n_estimators': [100, 300],
+    'learning_rate': [0.01, 0.1],
+    'max_depth': [10, 20]
 }
 
-# Setting verbose to 0 to suppress GridSearchCV output
-grid_search = GridSearchCV(estimator=clf, param_grid=param_grid, cv=2, n_jobs=-1, verbose=0)
+print("\nTuning RandomForest...")
+grid_rf = GridSearchCV(RandomForestClassifier(random_state=42), tuned_params_rf, cv=3, scoring='accuracy')
+grid_rf.fit(X_train, y_train)
+best_rf = grid_rf.best_estimator_
 
-# Manually simulate the progress of GridSearchCV with a custom loading bar
-total_fits = len(param_grid['n_estimators']) * len(param_grid['max_depth']) * len(param_grid['min_samples_split']) * len(param_grid['min_samples_leaf']) * len(param_grid['max_features']) * 2  # `cv=2`
-fits_done = 0
+print("\nTuning XGBoost...")
+grid_xgb = GridSearchCV(XGBClassifier(eval_metric='mlogloss', use_label_encoder=False), tuned_params_xgb, cv=3, scoring='accuracy')
+grid_xgb.fit(X_train, y_train)
+best_xgb = grid_xgb.best_estimator_
 
-# Start the loading bar for training and tuning progress
-loading_bar(fits_done, total_fits, prefix="Training and Tuning Model")
+# Voting Ensemble
+ensemble_model = VotingClassifier(estimators=[('rf', best_rf), ('xgb', best_xgb)], voting='soft')
 
-# Loop through the parameter grid and manually fit while updating the loading bar
-for params in grid_search.param_grid['n_estimators']:
-    for max_depth in grid_search.param_grid['max_depth']:
-        for min_samples_split in grid_search.param_grid['min_samples_split']:
-            for min_samples_leaf in grid_search.param_grid['min_samples_leaf']:
-                for max_features in grid_search.param_grid['max_features']:
-                    clf.set_params(
-                        n_estimators=params,
-                        max_depth=max_depth,
-                        min_samples_split=min_samples_split,
-                        min_samples_leaf=min_samples_leaf,
-                        max_features=max_features
-                    )
-                    clf.fit(X_train, y_train)
-                    fits_done += 1
-                    loading_bar(fits_done, total_fits, prefix="Training and Tuning Model")
+# Fit and evaluate models
+for model_name, model in [("SVM", SVC(probability=True)), ("RandomForest", best_rf), ("XGBoost", best_xgb), ("Ensemble", ensemble_model)]:
+    print(f"\nTraining {model_name}...")
+    model.fit(X_train, y_train)
+    y_pred = model.predict(X_test)
+    y_pred_proba = model.predict_proba(X_test) if hasattr(model, "predict_proba") else None
 
-# Use the best estimator from the grid search (in this case, we'll use the last fit model)
-best_model = clf
+    # Calculate metrics
+    accuracy = accuracy_score(y_test, y_pred)
+    precision = precision_score(y_test, y_pred, average='weighted', zero_division=1)
+    recall = recall_score(y_test, y_pred, average='weighted', zero_division=1)
+    f1 = f1_score(y_test, y_pred, average='weighted', zero_division=1)
+    auc_roc = roc_auc_score(y_test, y_pred_proba, multi_class='ovr') if y_pred_proba is not None else 'N/A'
+    logloss = log_loss(y_test, y_pred_proba) if y_pred_proba is not None else 'N/A'
 
-# Step 5: Evaluate the Model
-y_pred = best_model.predict(X_test)
-
-accuracy = accuracy_score(y_test, y_pred)
-print(f'\nOptimized Accuracy: {accuracy * 100:.2f}%')
-
-print("\nOptimized Classification Report:")
-print(classification_report(y_test, y_pred, zero_division=0))
-
-print("Confusion Matrix:")
-print(confusion_matrix(y_test, y_pred))
+    # Print results
+    print(f"{model_name} Results:")
+    print(f"Accuracy: {accuracy:.2f}")
+    print("Confusion Matrix:")
+    print(confusion_matrix(y_test, y_pred))
+    print(f"Precision: {precision:.2f}")
+    print(f"Recall (Sensitivity): {recall:.2f}")
+    print(f"F1 Score: {f1:.2f}")
+    print(f"AUC-ROC: {auc_roc}")
+    print(f"Log Loss: {logloss}")
