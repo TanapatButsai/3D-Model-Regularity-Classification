@@ -1,20 +1,22 @@
 import os
 import pandas as pd
 import numpy as np
-import trimesh
 import torch
 import torch.nn as nn
-from torch.utils.data import Dataset, DataLoader
+import torch.optim as optim
+from torch.utils.data import DataLoader, Dataset
 from sklearn.metrics import accuracy_score, confusion_matrix, precision_score, recall_score, f1_score, roc_auc_score, log_loss
-from sklearn.model_selection import train_test_split
-from imblearn.over_sampling import SMOTE
 from tqdm import tqdm
+import trimesh
 import warnings
 
-# Configuration dictionary
+# Suppress specific warnings
+warnings.filterwarnings("ignore", category=UserWarning)
+
+# Configuration settings
 config = {
     "base_dir": 'datasets/3d-future-dataset/obj-3d.future',
-    "label_file_path": "datasets/3d-future-dataset/label/Final_Validated_Regularity_Levels.xlsx",
+    "label_file_path": 'datasets/3d-future-dataset/label/Final_Validated_Regularity_Levels.xlsx',
     "max_data_points": 10000,
     "point_cloud_size": 1024,
     "batch_size": 32,
@@ -22,163 +24,145 @@ config = {
     "num_epochs": 100,
     "learning_rate": 0.001,
     "device": 'cuda' if torch.cuda.is_available() else 'cpu',
-    "patience": 10  # Number of epochs with no improvement before stopping
+    "patience": 10  # For early stopping
 }
 
-# Print the configuration settings at the start
 print("Configuration Settings:")
 for key, value in config.items():
     print(f"{key}: {value}")
-print("\nStarting Training...")
 
-# Load label data and preprocess
-labels_df = pd.read_excel(config["label_file_path"])
-labels_df = labels_df[['Object ID (Dataset Original Object ID)', 'Final Regularity Level']]
-labels_df = labels_df.sample(n=min(config["max_data_points"], len(labels_df)), random_state=42)
-labels_df['Final Regularity Level'] -= 1  # Adjust labels to start from 0
+# PointNet Model
+class PointNet(nn.Module):
+    def __init__(self, num_classes):
+        super(PointNet, self).__init__()
+        self.conv1 = nn.Conv1d(3, 64, 1)
+        self.conv2 = nn.Conv1d(64, 128, 1)
+        self.conv3 = nn.Conv1d(128, 1024, 1)
+        self.fc1 = nn.Linear(1024, 512)
+        self.fc2 = nn.Linear(512, 256)
+        self.fc3 = nn.Linear(256, num_classes)
+        self.bn1 = nn.BatchNorm1d(64)
+        self.bn2 = nn.BatchNorm1d(128)
+        self.bn3 = nn.BatchNorm1d(1024)
+        self.bn4 = nn.BatchNorm1d(512)
+        self.bn5 = nn.BatchNorm1d(256)
+        self.dropout = nn.Dropout(p=0.3)
 
-# Point cloud extraction function from OBJ files
-def extract_point_cloud(obj_file):
-    try:
-        mesh = trimesh.load(obj_file, force='mesh')
-        if not isinstance(mesh, trimesh.Trimesh):
-            return None  # Skip non-mesh files
-        points = mesh.vertices  # Extract vertices as point cloud
-        return points
-    except Exception as e:
-        print(f"Error processing file {obj_file}: {e}")
-        return None
+    def forward(self, x):
+        x = x.transpose(1, 2)
+        x = torch.relu(self.bn1(self.conv1(x)))
+        x = torch.relu(self.bn2(self.conv2(x)))
+        x = torch.relu(self.bn3(self.conv3(x)))
+        x = torch.max(x, 2, keepdim=True)[0]
+        x = x.view(-1, 1024)
+        x = torch.relu(self.bn4(self.fc1(x)))
+        x = torch.relu(self.bn5(self.fc2(x)))
+        x = self.dropout(x)
+        return self.fc3(x)
 
-# Prepare point cloud dataset and corresponding labels
+# Dataset class for loading and preprocessing data
 class PointCloudDataset(Dataset):
-    def __init__(self, labels_df, base_dir, point_cloud_size):
+    def __init__(self, labels_df, base_dir, point_cloud_size=1024):
         self.labels_df = labels_df
         self.base_dir = base_dir
         self.point_cloud_size = point_cloud_size
-        self.point_clouds = []
-        self.labels = []
-
-        for index, row in tqdm(self.labels_df.iterrows(), total=len(self.labels_df), desc="Loading Point Clouds"):
-            obj_id = row['Object ID (Dataset Original Object ID)']
-            obj_file = os.path.join(base_dir, str(obj_id), 'normalized_model.obj')
-            if os.path.exists(obj_file):
-                points = extract_point_cloud(obj_file)
-                if points is not None:
-                    # Sample or pad points to configured point cloud size
-                    if len(points) > self.point_cloud_size:
-                        points = points[:self.point_cloud_size]
-                    elif len(points) < self.point_cloud_size:
-                        points = np.pad(points, ((0, self.point_cloud_size - len(points)), (0, 0)), mode='constant')
-                    self.point_clouds.append(points)
-                    self.labels.append(row['Final Regularity Level'])
-
-        self.point_clouds = np.array(self.point_clouds)
-        self.labels = np.array(self.labels)
 
     def __len__(self):
-        return len(self.point_clouds)
+        return len(self.labels_df)
 
     def __getitem__(self, idx):
-        return torch.tensor(self.point_clouds[idx], dtype=torch.float32), self.labels[idx]
+        row = self.labels_df.iloc[idx]
+        obj_id = row['Object ID (Dataset Original Object ID)']
+        label = int(row['Final Regularity Level']) - 1  # Adjust label to start from 0
+        obj_file = os.path.join(self.base_dir, str(obj_id), 'normalized_model.obj')
 
-# Load the dataset
+        mesh = trimesh.load(obj_file, force='mesh')
+        if not isinstance(mesh, trimesh.Trimesh):
+            raise ValueError("Invalid mesh format")
+
+        points = mesh.sample(self.point_cloud_size)
+        points = torch.tensor(points, dtype=torch.float32)
+        return points, label
+
+# Load and preprocess data
+labels_df = pd.read_excel(config["label_file_path"])
+labels_df = labels_df[['Object ID (Dataset Original Object ID)', 'Final Regularity Level']]
+labels_df = labels_df.sample(n=min(config["max_data_points"], len(labels_df)), random_state=42)
+
+# Initialize dataset and dataloader
 dataset = PointCloudDataset(labels_df, config["base_dir"], config["point_cloud_size"])
-X_train, X_test, y_train, y_test = train_test_split(dataset.point_clouds, dataset.labels, test_size=0.2, random_state=42)
+dataloader = DataLoader(dataset, batch_size=config["batch_size"], shuffle=True)
 
-train_dataset = [(torch.tensor(X, dtype=torch.float32).to(config["device"]), y) for X, y in zip(X_train, y_train)]
-test_dataset = [(torch.tensor(X, dtype=torch.float32).to(config["device"]), y) for X, y in zip(X_test, y_test)]
-
-train_loader = DataLoader(train_dataset, batch_size=config["batch_size"], shuffle=True)
-test_loader = DataLoader(test_dataset, batch_size=config["batch_size"], shuffle=False)
-
-# Define PointNet model structure
-class PointNet(nn.Module):
-    # Add PointNet structure here
-    def __init__(self, num_classes=4):
-        super(PointNet, self).__init__()
-        # Define PointNet layers (use existing PyTorch PointNet implementations if available)
-        pass
-
-    def forward(self, x):
-        # Forward pass logic
-        pass
-
-# Initialize PointNet
+# Initialize model, loss, optimizer
 model = PointNet(num_classes=config["num_classes"]).to(config["device"])
 criterion = nn.CrossEntropyLoss()
-optimizer = torch.optim.Adam(model.parameters(), lr=config["learning_rate"])
+optimizer = optim.Adam(model.parameters(), lr=config["learning_rate"])
 
-# Early stopping parameters
-best_val_loss = float('inf')
+# Training with early stopping
+best_loss = float('inf')
 epochs_no_improve = 0
-
-# Train PointNet model
 for epoch in range(config["num_epochs"]):
     model.train()
     running_loss = 0.0
-    for inputs, labels in train_loader:
-        inputs, labels = inputs.to(config["device"]), labels.to(config["device"])
+    y_true, y_pred = [], []
+
+    for data, labels in tqdm(dataloader, desc=f"Epoch {epoch+1}/{config['num_epochs']}"):
+        data, labels = data.to(config["device"]), labels.to(config["device"])
         optimizer.zero_grad()
-        outputs = model(inputs)
+        outputs = model(data)
         loss = criterion(outputs, labels)
         loss.backward()
         optimizer.step()
-        running_loss += loss.item()
 
-    # Calculate validation loss for early stopping
-    model.eval()
-    val_loss = 0.0
-    with torch.no_grad():
-        for inputs, labels in test_loader:
-            inputs, labels = inputs.to(config["device"]), labels.to(config["device"])
-            outputs = model(inputs)
-            loss = criterion(outputs, labels)
-            val_loss += loss.item()
+        running_loss += loss.item() * data.size(0)
+        y_true.extend(labels.cpu().numpy())
+        y_pred.extend(torch.argmax(outputs, dim=1).cpu().numpy())
 
-    val_loss /= len(test_loader)
-    print(f"Epoch [{epoch+1}/{config['num_epochs']}], Train Loss: {running_loss/len(train_loader):.4f}, Val Loss: {val_loss:.4f}")
+    epoch_loss = running_loss / len(dataloader.dataset)
+    accuracy = accuracy_score(y_true, y_pred)
+    print(f"Epoch [{epoch+1}/{config['num_epochs']}], Loss: {epoch_loss:.4f}, Accuracy: {accuracy:.4f}")
 
-    # Early stopping condition
-    if val_loss < best_val_loss:
-        best_val_loss = val_loss
+    # Early stopping
+    if epoch_loss < best_loss:
+        best_loss = epoch_loss
         epochs_no_improve = 0
+        torch.save(model.state_dict(), 'best_model.pth')
     else:
         epochs_no_improve += 1
         if epochs_no_improve >= config["patience"]:
-            print(f"Early stopping at epoch {epoch+1} due to no improvement in validation loss for {config['patience']} epochs.")
+            print("Early stopping triggered. Restoring best model.")
+            model.load_state_dict(torch.load('best_model.pth'))
             break
 
-# Evaluate model on test set
+# Evaluation
 model.eval()
-all_preds, all_labels = [], []
+y_true, y_pred, y_probs = [], [], []
 with torch.no_grad():
-    for inputs, labels in test_loader:
-        inputs, labels = inputs.to(config["device"]), labels.to(config["device"])
-        outputs = model(inputs)
-        _, preds = torch.max(outputs, 1)
-        all_preds.extend(preds.cpu().numpy())
-        all_labels.extend(labels.cpu().numpy())
+    for data, labels in dataloader:
+        data, labels = data.to(config["device"]), labels.to(config["device"])
+        outputs = model(data)
+        y_probs.extend(torch.softmax(outputs, dim=1).cpu().numpy())
+        y_true.extend(labels.cpu().numpy())
+        y_pred.extend(torch.argmax(outputs, dim=1).cpu().numpy())
 
-# Calculate metrics
-accuracy = accuracy_score(all_labels, all_preds)
-precision = precision_score(all_labels, all_preds, average='weighted', zero_division=1)
-recall = recall_score(all_labels, all_preds, average='weighted', zero_division=1)
-f1 = f1_score(all_labels, all_preds, average='weighted', zero_division=1)
-auc_roc = roc_auc_score(all_labels, torch.nn.functional.softmax(torch.tensor(all_preds), dim=1), multi_class='ovr')
-logloss = log_loss(all_labels, torch.nn.functional.softmax(torch.tensor(all_preds), dim=1))
+accuracy = accuracy_score(y_true, y_pred)
+precision = precision_score(y_true, y_pred, average='weighted')
+recall = recall_score(y_true, y_pred, average='weighted')
+f1 = f1_score(y_true, y_pred, average='weighted')
+auc_roc = roc_auc_score(y_true, y_probs, multi_class='ovr')
+logloss = log_loss(y_true, y_probs)
 
-print("\nTraining Complete.")
-print("\nFinal Configuration Settings:")
-for key, value in config.items():
-    print(f"{key}: {value}")
-
-# Print final results
-print("\nPointNet Results:")
+# Print metrics
+print("Final Evaluation Results:")
 print(f"Accuracy: {accuracy:.2f}")
 print("Confusion Matrix:")
-print(confusion_matrix(all_labels, all_preds))
+print(confusion_matrix(y_true, y_pred))
 print(f"Precision: {precision:.2f}")
-print(f"Recall (Sensitivity): {recall:.2f}")
+print(f"Recall: {recall:.2f}")
 print(f"F1 Score: {f1:.2f}")
-print(f"AUC-ROC: {auc_roc}")
-print(f"Log Loss: {logloss}")
+print(f"AUC-ROC: {auc_roc:.2f}")
+print(f"Log Loss: {logloss:.4f}")
+
+print("\nConfiguration at End of Training:")
+for key, value in config.items():
+    print(f"{key}: {value}")
