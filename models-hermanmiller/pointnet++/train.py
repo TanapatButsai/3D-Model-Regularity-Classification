@@ -223,6 +223,63 @@ def train_pointnetplusplus_with_improvements(config):
     print("\nClassification Report:")
     print(classification_report(all_labels, all_preds, zero_division=1))
 
+class ClassBalancedLoss(nn.Module):
+    def __init__(self, beta=0.9999):
+        super(ClassBalancedLoss, self).__init__()
+        self.beta = beta
+
+    def forward(self, logits, targets, num_classes):
+        # Compute effective number of samples
+        labels = torch.eye(num_classes)[targets].to(logits.device)
+        effective_num = 1.0 - self.beta ** labels.sum(0)
+        weights = (1.0 - self.beta) / (effective_num + 1e-8)
+        weights = weights / weights.sum() * num_classes
+
+        # Compute loss
+        loss = F.cross_entropy(logits, targets, reduction='none')
+        loss = weights[targets] * loss
+        return loss.mean()
+
+# Enhanced Model with Squeeze-and-Excitation Block
+class SEBlock(nn.Module):
+    def __init__(self, channels, reduction=16):
+        super(SEBlock, self).__init__()
+        self.fc1 = nn.Linear(channels, channels // reduction)
+        self.fc2 = nn.Linear(channels // reduction, channels)
+
+    def forward(self, x):
+        b, c, _ = x.size()
+        y = x.mean(-1)  # Global average pooling
+        y = F.relu(self.fc1(y))
+        y = torch.sigmoid(self.fc2(y))
+        return x * y.unsqueeze(-1)
+
+class EnhancedPointNetPlusPlus(nn.Module):
+    def __init__(self, num_classes):
+        super(EnhancedPointNetPlusPlus, self).__init__()
+        self.sa1 = SetAbstraction(3, 64, num_points=1024, sample_ratio=0.5)
+        self.se1 = SEBlock(64)
+        self.sa2 = SetAbstraction(64, 128, num_points=512, sample_ratio=0.25)
+        self.se2 = SEBlock(128)
+        self.fc1 = nn.Linear(128 * 128, 128)
+        self.bn1 = nn.BatchNorm1d(128)
+        self.fc2 = nn.Linear(128, 64)
+        self.bn2 = nn.BatchNorm1d(64)
+        self.fc3 = nn.Linear(64, num_classes)
+        self.dropout = nn.Dropout(p=0.4)
+
+    def forward(self, x):
+        x = self.sa1(x)
+        x = self.se1(x)
+        x = self.sa2(x)
+        x = self.se2(x)
+        x = x.view(x.size(0), -1)
+        x = F.relu(self.bn1(self.fc1(x)))
+        x = self.dropout(x)
+        x = F.relu(self.bn2(self.fc2(x)))
+        x = self.fc3(x)
+        return x
+
 def process_dataset(dataset_folder, labels_df):
     point_clouds = []
     labels = []
@@ -237,11 +294,18 @@ def process_dataset(dataset_folder, labels_df):
                 labels.append(label)
     return np.array(point_clouds), np.array(labels)
 
-def train_pointnetplusplus(config):
+# Updated Training Loop
+def train_improved_pointnetplusplus(config):
     labels_df = pd.read_excel(config["label_file"])
-    point_clouds, labels = process_dataset(config["dataset_folder"], labels_df)
+    point_clouds, labels = process_dataset_with_augmentation(config["dataset_folder"], labels_df)
+
+    smote = SMOTE()
+    point_clouds_flat = point_clouds.reshape(point_clouds.shape[0], -1)
+    point_clouds_resampled, labels_resampled = smote.fit_resample(point_clouds_flat, labels)
+    point_clouds_resampled = point_clouds_resampled.reshape(-1, config["num_points"], 3)
+
     X_train, X_test, y_train, y_test = train_test_split(
-        point_clouds, labels, test_size=0.2, random_state=42
+        point_clouds_resampled, labels_resampled, test_size=0.2, random_state=42
     )
     X_train_tensor = torch.tensor(X_train, dtype=torch.float32).permute(0, 2, 1)
     y_train_tensor = torch.tensor(y_train, dtype=torch.long)
@@ -250,15 +314,15 @@ def train_pointnetplusplus(config):
 
     train_dataset = torch.utils.data.TensorDataset(X_train_tensor, y_train_tensor)
     test_dataset = torch.utils.data.TensorDataset(X_test_tensor, y_test_tensor)
-    train_loader = torch.utils.data.DataLoader(train_dataset, batch_size=config["batch_size"], shuffle=True)
-    test_loader = torch.utils.data.DataLoader(test_dataset, batch_size=config["batch_size"], shuffle=False)
-    
+
+    train_loader = DataLoader(train_dataset, batch_size=config["batch_size"], shuffle=True)
+    test_loader = DataLoader(test_dataset, batch_size=config["batch_size"], shuffle=False)
+
     device = config["device"]
-    model = PointNetPlusPlus(num_classes=config["num_classes"]).to(device)
-    optimizer = optim.Adam(model.parameters(), lr=config["learning_rate"], weight_decay=config["weight_decay"])
-    criterion = nn.CrossEntropyLoss(weight=torch.tensor(config["class_weights"]).to(device))
-    scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.5, patience=5, verbose=True)
-    
+    model = EnhancedPointNetPlusPlus(num_classes=config["num_classes"]).to(device)
+    optimizer = optim.AdamW(model.parameters(), lr=config["learning_rate"], weight_decay=config["weight_decay"])
+    criterion = ClassBalancedLoss(beta=0.9999)
+
     for epoch in range(config["num_epochs"]):
         model.train()
         running_loss = 0.0
@@ -266,11 +330,10 @@ def train_pointnetplusplus(config):
             inputs, labels = inputs.to(device), labels.to(device)
             optimizer.zero_grad()
             outputs = model(inputs)
-            loss = criterion(outputs, labels)
+            loss = criterion(outputs, labels, config["num_classes"])
             loss.backward()
             optimizer.step()
             running_loss += loss.item()
-        scheduler.step(running_loss)
         print(f"Epoch {epoch+1}/{config['num_epochs']}, Loss: {running_loss/len(train_loader):.4f}")
 
     model.eval()
@@ -284,7 +347,7 @@ def train_pointnetplusplus(config):
             all_preds.extend(preds.cpu().numpy())
             all_labels.extend(labels.cpu().numpy())
             all_probas.extend(probs.cpu().numpy())
-    
+
     # Metrics
     accuracy = accuracy_score(all_labels, all_preds)
     conf_matrix = confusion_matrix(all_labels, all_preds)
@@ -304,11 +367,10 @@ def train_pointnetplusplus(config):
     print(f"F1 Score: {f1:.2f}")
     print(f"AUC-ROC: {auc_roc:.2f}")
     print(f"Log Loss: {logloss:.2f}")
-    print("\nClassification Report:")
-    print(classification_report(all_labels, all_preds, zero_division=1))
+
 
 if __name__ == "__main__":
 
-    
+
     # train_pointnetplusplus(config)
-    train_pointnetplusplus_with_improvements(config)
+    train_improved_pointnetplusplus(config)
