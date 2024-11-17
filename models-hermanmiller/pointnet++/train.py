@@ -13,6 +13,9 @@ from sklearn.model_selection import train_test_split
 import trimesh
 from tqdm import tqdm
 import torch.nn.functional as F  # Import Functional API
+from imblearn.over_sampling import SMOTE
+from torch.utils.data import DataLoader, WeightedRandomSampler
+
 
 # Configuration with adjustments
 config = {
@@ -83,6 +86,142 @@ def obj_to_pointcloud(obj_path, num_points=config["num_points"]):
         points = mesh.sample(num_points)
         return points
     return None
+# Focal Loss
+class FocalLoss(nn.Module):
+    def __init__(self, alpha=1, gamma=2):
+        super(FocalLoss, self).__init__()
+        self.alpha = alpha
+        self.gamma = gamma
+
+    def forward(self, inputs, targets):
+        BCE_loss = F.cross_entropy(inputs, targets, reduction='none')
+        pt = torch.exp(-BCE_loss)
+        F_loss = self.alpha * (1 - pt) ** self.gamma * BCE_loss
+        return F_loss.mean()
+# Add data augmentation during point cloud processing
+def augment_pointcloud(points):
+    # Random rotation
+    theta = np.random.uniform(0, 2 * np.pi)
+    rotation_matrix = np.array([
+        [np.cos(theta), -np.sin(theta), 0],
+        [np.sin(theta),  np.cos(theta), 0],
+        [0,              0,             1]
+    ])
+    points = np.dot(points, rotation_matrix.T)
+
+    # Jittering
+    points += np.random.normal(0, 0.02, points.shape)
+    return points
+
+# Add data augmentation during point cloud processing
+def augment_pointcloud(points):
+    # Random rotation
+    theta = np.random.uniform(0, 2 * np.pi)
+    rotation_matrix = np.array([
+        [np.cos(theta), -np.sin(theta), 0],
+        [np.sin(theta),  np.cos(theta), 0],
+        [0,              0,             1]
+    ])
+    points = np.dot(points, rotation_matrix.T)
+
+    # Jittering
+    points += np.random.normal(0, 0.02, points.shape)
+    return points
+
+# Process dataset with augmentation and balancing
+def process_dataset_with_augmentation(dataset_folder, labels_df):
+    point_clouds = []
+    labels = []
+    for _, row in tqdm(labels_df.iterrows(), total=len(labels_df)):
+        object_id = row['Object ID (Dataset Original Object ID)']
+        label = row['Final Regularity Level'] - 1
+        obj_file = os.path.join(dataset_folder, object_id.strip(), f"{object_id.strip()}.obj")
+        if os.path.isfile(obj_file):
+            point_cloud = obj_to_pointcloud(obj_file)
+            if point_cloud is not None:
+                augmented_points = augment_pointcloud(point_cloud)
+                point_clouds.append(augmented_points)
+                labels.append(label)
+    return np.array(point_clouds), np.array(labels)
+
+# Adjust training loop to handle focal loss and SMOTE
+def train_pointnetplusplus_with_improvements(config):
+    labels_df = pd.read_excel(config["label_file"])
+    point_clouds, labels = process_dataset_with_augmentation(config["dataset_folder"], labels_df)
+
+    # Handle imbalance using SMOTE
+    smote = SMOTE()
+    point_clouds_flat = point_clouds.reshape(point_clouds.shape[0], -1)
+    point_clouds_resampled, labels_resampled = smote.fit_resample(point_clouds_flat, labels)
+    point_clouds_resampled = point_clouds_resampled.reshape(-1, config["num_points"], 3)
+
+    X_train, X_test, y_train, y_test = train_test_split(
+        point_clouds_resampled, labels_resampled, test_size=0.2, random_state=42
+    )
+    X_train_tensor = torch.tensor(X_train, dtype=torch.float32).permute(0, 2, 1)
+    y_train_tensor = torch.tensor(y_train, dtype=torch.long)
+    X_test_tensor = torch.tensor(X_test, dtype=torch.float32).permute(0, 2, 1)
+    y_test_tensor = torch.tensor(y_test, dtype=torch.long)
+
+    train_dataset = torch.utils.data.TensorDataset(X_train_tensor, y_train_tensor)
+    test_dataset = torch.utils.data.TensorDataset(X_test_tensor, y_test_tensor)
+
+    train_loader = DataLoader(train_dataset, batch_size=config["batch_size"], shuffle=True)
+    test_loader = DataLoader(test_dataset, batch_size=config["batch_size"], shuffle=False)
+    
+    device = config["device"]
+    model = PointNetPlusPlus(num_classes=config["num_classes"]).to(device)
+    optimizer = optim.Adam(model.parameters(), lr=config["learning_rate"], weight_decay=config["weight_decay"])
+    criterion = FocalLoss(alpha=1, gamma=2)
+    scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.5, patience=5, verbose=True)
+    
+    for epoch in range(config["num_epochs"]):
+        model.train()
+        running_loss = 0.0
+        for inputs, labels in train_loader:
+            inputs, labels = inputs.to(device), labels.to(device)
+            optimizer.zero_grad()
+            outputs = model(inputs)
+            loss = criterion(outputs, labels)
+            loss.backward()
+            optimizer.step()
+            running_loss += loss.item()
+        scheduler.step(running_loss)
+        print(f"Epoch {epoch+1}/{config['num_epochs']}, Loss: {running_loss/len(train_loader):.4f}")
+
+    model.eval()
+    all_preds, all_labels, all_probas = [], [], []
+    with torch.no_grad():
+        for inputs, labels in test_loader:
+            inputs, labels = inputs.to(device), labels.to(device)
+            outputs = model(inputs)
+            probs = F.softmax(outputs, dim=1)
+            _, preds = torch.max(outputs, 1)
+            all_preds.extend(preds.cpu().numpy())
+            all_labels.extend(labels.cpu().numpy())
+            all_probas.extend(probs.cpu().numpy())
+    
+    # Metrics
+    accuracy = accuracy_score(all_labels, all_preds)
+    conf_matrix = confusion_matrix(all_labels, all_preds)
+    precision = precision_score(all_labels, all_preds, average="weighted", zero_division=1)
+    recall = recall_score(all_labels, all_preds, average="weighted", zero_division=1)
+    f1 = f1_score(all_labels, all_preds, average="weighted", zero_division=1)
+    lb = LabelBinarizer()
+    y_true_binarized = lb.fit_transform(all_labels)
+    auc_roc = roc_auc_score(y_true_binarized, all_probas, average="weighted", multi_class="ovr")
+    logloss = log_loss(all_labels, all_probas)
+
+    # Print Metrics
+    print(f"Accuracy: {accuracy:.2f}")
+    print("Confusion Matrix:\n", conf_matrix)
+    print(f"Precision: {precision:.2f}")
+    print(f"Recall (Sensitivity): {recall:.2f}")
+    print(f"F1 Score: {f1:.2f}")
+    print(f"AUC-ROC: {auc_roc:.2f}")
+    print(f"Log Loss: {logloss:.2f}")
+    print("\nClassification Report:")
+    print(classification_report(all_labels, all_preds, zero_division=1))
 
 def process_dataset(dataset_folder, labels_df):
     point_clouds = []
@@ -169,4 +308,7 @@ def train_pointnetplusplus(config):
     print(classification_report(all_labels, all_preds, zero_division=1))
 
 if __name__ == "__main__":
-    train_pointnetplusplus(config)
+
+    
+    # train_pointnetplusplus(config)
+    train_pointnetplusplus_with_improvements(config)
