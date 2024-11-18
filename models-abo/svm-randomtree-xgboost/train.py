@@ -19,6 +19,7 @@ label_data = pd.read_excel(label_file)
 # Define MAX_DATA_POINTS
 MAX = len(label_data)
 MAX_DATA_POINTS = MAX  # You can change this number based on how many data points you want to train with
+# MAX_DATA_POINTS = 100  # You can change this number based on how many data points you want to train with
 
 # Limit the number of data points based on MAX_DATA_POINTS
 if len(label_data) > MAX_DATA_POINTS:
@@ -92,7 +93,9 @@ rf_clf = RandomForestClassifier()
 xgb_clf = XGBClassifier(eval_metric='mlogloss')
 
 # Function to evaluate model
-def evaluate_model(clf, X_test, y_test, model_name):
+# Updated evaluate_model function to save results
+# Updated evaluate_model function to save confusion matrix as an image
+def evaluate_model(clf, X_test, y_test, model_name, results_path="datasets/abo/label/results_svm_random_xg.csv"):
     predictions = clf.predict(X_test)
     prob_predictions = clf.predict_proba(X_test) if hasattr(clf, 'predict_proba') else None
 
@@ -112,6 +115,55 @@ def evaluate_model(clf, X_test, y_test, model_name):
     print(f"F1 Score: {f1:.2f}")
     print(f"AUC-ROC: {auc_roc}")
     print(f"Log Loss: {logloss}")
+
+    # Save the confusion matrix as an image
+    conf_matrix_image_path = f"datasets/abo/label/{model_name}_matrix.png"
+    plt.figure(figsize=(10, 8))
+    plt.imshow(conf_matrix, interpolation="nearest", cmap=plt.cm.Blues)
+    plt.title(f"{model_name} Confusion Matrix")
+    plt.colorbar()
+    tick_marks = np.arange(len(np.unique(y_test)))
+    plt.xticks(tick_marks, [f"Class_{i}" for i in range(len(np.unique(y_test)))], rotation=45)
+    plt.yticks(tick_marks, [f"Class_{i}" for i in range(len(np.unique(y_test)))])
+    plt.ylabel("True Label")
+    plt.xlabel("Predicted Label")
+
+    # Add values inside the confusion matrix
+    thresh = conf_matrix.max() / 2
+    for i in range(conf_matrix.shape[0]):
+        for j in range(conf_matrix.shape[1]):
+            plt.text(
+                j, i, format(conf_matrix[i, j], "d"),
+                horizontalalignment="center",
+                color="white" if conf_matrix[i, j] > thresh else "black"
+            )
+
+    plt.tight_layout()
+    plt.savefig(conf_matrix_image_path)
+    plt.close()
+    print(f"Confusion matrix image saved to {conf_matrix_image_path}")
+
+    # Prepare the results as a dictionary
+    results = {
+        "Model": model_name,
+        "Accuracy": accuracy,
+        "Precision": precision,
+        "Recall": recall,
+        "F1 Score": f1,
+        "AUC-ROC": auc_roc,
+        "Log Loss": logloss
+    }
+
+    # Save the results to the CSV file
+    if not os.path.exists(results_path):
+        # If the file does not exist, create it and write headers
+        pd.DataFrame([results]).to_csv(results_path, index=False)
+    else:
+        # If the file exists, append the new results
+        pd.DataFrame([results]).to_csv(results_path, mode='a', header=False, index=False)
+
+    print(f"Results saved to {results_path}")
+
 
 # Train and evaluate SVM
 svm_clf.fit(X_train, y_train)
