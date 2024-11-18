@@ -65,12 +65,20 @@ if len(features) == 0:
 X = np.array(features)
 y = np.array(targets)
 
+# Remove classes with fewer than 2 samples
+class_counts = np.bincount(y)
+valid_classes = np.where(class_counts >= 2)[0]
+valid_indices = np.isin(y, valid_classes)
+X = X[valid_indices]
+y = y[valid_indices]
+
+# Re-encode labels to remove gaps in class indices
 label_encoder = LabelEncoder()
 y = label_encoder.fit_transform(y)
 num_classes = len(np.unique(y))
 
 # Split dataset into training and testing sets
-X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
+X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42, stratify=y)
 
 # Initialize classifiers
 models = {
@@ -113,17 +121,21 @@ for model_name, model in models.items():
     print(f"{model_name} F1 Score: {f1:.2f}")
     
     # AUC-ROC and Log Loss (requires probability estimates)
-    if y_pred_proba is not None:
+    if y_pred_proba is not None and len(np.unique(y_test)) > 1:
         try:
-            auc_roc = roc_auc_score(y_test, y_pred_proba, multi_class='ovr', average="weighted")
-        except ValueError:
-            auc_roc = "N/A (issue with class probabilities)"
-        try:
-            logloss = log_loss(y_test, y_pred_proba, labels=np.arange(num_classes))
-        except ValueError:
-            logloss = "N/A (issue with log loss calculation)"
-        print(f"{model_name} AUC-ROC: {auc_roc}")
-        print(f"{model_name} Log Loss: {logloss}")
+            # Convert y_test to one-hot encoding for AUC-ROC calculation
+            y_test_one_hot = np.zeros((y_test.size, num_classes))
+            y_test_one_hot[np.arange(y_test.size), y_test] = 1
+            auc_roc = roc_auc_score(y_test_one_hot, y_pred_proba, multi_class='ovr', average="weighted")
+        except ValueError as e:
+            auc_roc = f"N/A ({str(e)})"
     else:
-        print(f"{model_name} AUC-ROC: N/A (no probability estimates)")
-        print(f"{model_name} Log Loss: N/A (no probability estimates)")
+        auc_roc = "N/A (single class in test set)"
+    
+    try:
+        logloss = log_loss(y_test, y_pred_proba, labels=np.arange(num_classes))
+    except ValueError:
+        logloss = "N/A (issue with log loss calculation)"
+    
+    print(f"{model_name} AUC-ROC: {auc_roc}")
+    print(f"{model_name} Log Loss: {logloss}")
