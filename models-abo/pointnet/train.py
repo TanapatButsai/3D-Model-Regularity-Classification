@@ -10,7 +10,7 @@ from sklearn.model_selection import train_test_split
 from sklearn.preprocessing import LabelEncoder
 from sklearn.metrics import (
     confusion_matrix, precision_score, recall_score,
-    f1_score, roc_auc_score, log_loss
+    f1_score, roc_auc_score, log_loss, accuracy_score
 )
 import matplotlib.pyplot as plt
 
@@ -18,15 +18,14 @@ import matplotlib.pyplot as plt
 config = {
     "label_file": "datasets/abo/label/Final_Validated_Regularity_Levels.xlsx",
     "obj_folder": "datasets/abo/obj-ABO",
-    "num_points": 1024,  # Number of points to sample from each 3D object
+    "num_points": 1024,
     "batch_size": 16,
     "num_epochs": 60,
     "learning_rate": 0.001,
     "weight_decay": 1e-4,
     "dropout_rate": 0.3,
-    "class_weights": [1.0, 2.0, 3.0, 4.0],  # Adjust these based on class distribution
     "test_size": 0.2,
-    "num_of_sample": 7583,  # Number of samples to use for training/testing
+    "num_of_sample": 7583,
     "device": "cuda" if torch.cuda.is_available() else "cpu",
 }
 
@@ -35,7 +34,7 @@ print(f"Using device: {config['device']}")
 # Load labels from Excel file
 label_data = pd.read_excel(config["label_file"])
 
-# Limit the number of samples if specified in the config
+# Limit the number of samples
 if config["num_of_sample"] < len(label_data):
     label_data = label_data.sample(n=config["num_of_sample"], random_state=42)
 
@@ -59,11 +58,7 @@ targets = []
 for index, row in tqdm(labels.iterrows(), total=len(labels)):
     object_id = row['Object ID (Dataset Original Object ID)']
     regularity_level = row['Final Regularity Level']
-    
-    # Construct the path
     obj_file = os.path.join(config["obj_folder"], object_id.strip(), f'{object_id.strip()}.obj')
-    
-    # Load point cloud
     if os.path.isfile(obj_file):
         point_cloud = load_pointcloud_from_obj(obj_file)
         if point_cloud is not None:
@@ -78,7 +73,7 @@ if len(point_clouds) == 0:
 X = np.array(point_clouds)
 y = np.array(targets)
 
-# Label encoding for continuous classes starting from 0
+# Label encoding
 label_encoder = LabelEncoder()
 y = label_encoder.fit_transform(y)
 
@@ -86,7 +81,13 @@ y = label_encoder.fit_transform(y)
 num_classes = len(np.unique(y))
 print(f"Number of unique classes: {num_classes}")
 
-# Split dataset into training and testing sets
+# Compute class weights dynamically
+class_counts = np.bincount(y)
+class_weights = 1.0 / class_counts
+class_weights = class_weights / class_weights.min()  # Normalize
+print(f"Computed Class Weights: {class_weights}")
+
+# Split dataset
 X_train, X_test, y_train, y_test = train_test_split(
     torch.tensor(X, dtype=torch.float32), torch.tensor(y, dtype=torch.long),
     test_size=config["test_size"], random_state=42
@@ -96,7 +97,7 @@ X_train, X_test, y_train, y_test = train_test_split(
 X_train, X_test = X_train.to(config["device"]), X_test.to(config["device"])
 y_train, y_test = y_train.to(config["device"]), y_test.to(config["device"])
 
-# Define the PointNet model with batch normalization and increased capacity
+# Define the PointNet model
 class ImprovedPointNet(nn.Module):
     def __init__(self, k=num_classes):
         super(ImprovedPointNet, self).__init__()
@@ -127,13 +128,13 @@ class ImprovedPointNet(nn.Module):
         x = self.fc3(x)
         return x
 
-# Initialize PointNet model with the correct number of classes
+# Initialize model
 model = ImprovedPointNet(k=num_classes).to(config["device"])
 
-# Define optimizer and weighted loss function to handle class imbalance
-class_weights = torch.tensor(config["class_weights"], device=config["device"])
+# Define optimizer and loss
+class_weights_tensor = torch.tensor(class_weights, device=config["device"], dtype=torch.float32)
+criterion = nn.CrossEntropyLoss(weight=class_weights_tensor)
 optimizer = optim.Adam(model.parameters(), lr=config["learning_rate"], weight_decay=config["weight_decay"])
-criterion = nn.CrossEntropyLoss(weight=class_weights)
 
 # Training loop
 train_data = torch.utils.data.TensorDataset(X_train, y_train)
@@ -153,14 +154,9 @@ for epoch in range(config["num_epochs"]):
         loss.backward()
         optimizer.step()
         running_loss += loss.item()
-
     print(f"Epoch [{epoch+1}/{config['num_epochs']}], Loss: {running_loss/len(train_loader):.4f}")
 
-# Evaluation and metrics
-# Path to save the results
-results_path = "datasets/abo/label/pointnet_evaluation_results.csv"
-
-# Evaluation and metrics
+# Evaluation
 model.eval()
 y_true = []
 y_pred = []
@@ -178,45 +174,34 @@ with torch.no_grad():
 
 # Confusion Matrix and Metrics
 conf_matrix = confusion_matrix(y_true, y_pred)
-accuracy = np.sum(np.array(y_true) == np.array(y_pred)) / len(y_true)  # Accuracy calculation
-precision = precision_score(y_true, y_pred, average="weighted")
+accuracy = accuracy_score(y_true, y_pred)
+precision = precision_score(y_true, y_pred, average="weighted", zero_division=1)
 recall = recall_score(y_true, y_pred, average="weighted")
 f1 = f1_score(y_true, y_pred, average="weighted")
 y_true_one_hot = np.eye(num_classes)[y_true]
 auc_roc = roc_auc_score(y_true_one_hot, y_pred_prob, multi_class="ovr")
-log_loss_value = log_loss(y_true, y_pred_prob)
+log_loss_value = log_loss(y_true, np.clip(y_pred_prob, 1e-15, 1-1e-15))
 
-# Print results
-print(f"Confusion Matrix:\n{conf_matrix}")
-print(f"Accuracy: {accuracy:.4f}")
-print(f"Precision: {precision:.4f}, Recall: {recall:.4f}, F1 Score: {f1:.4f}")
-print(f"AUC-ROC: {auc_roc:.4f}, Log Loss: {log_loss_value:.4f}")
-
-# Save results to a CSV file
+# Save metrics
+results_path = "datasets/abo/label/pointnet_evaluation_results.csv"
 results = {
     "Metric": ["Accuracy", "Precision", "Recall", "F1 Score", "AUC-ROC", "Log Loss"],
     "Value": [accuracy, precision, recall, f1, auc_roc, log_loss_value]
 }
 results_df = pd.DataFrame(results)
+results_df.to_csv(results_path, index=False)
+print(f"Results saved to {results_path}")
 
-# Save or append to CSV
-if not os.path.exists(results_path):
-    results_df.to_csv(results_path, index=False)
-else:
-    results_df.to_csv(results_path, mode='a', header=False, index=False)
-
-print(f"Evaluation results saved to {results_path}")
-
-# Save confusion matrix as an image
+# Save confusion matrix
 conf_matrix_path = os.path.join("datasets", "abo", "label", "PointNet_matrix.png")
-
 plt.figure(figsize=(10, 8))
 plt.imshow(conf_matrix, interpolation="nearest", cmap=plt.cm.Blues)
 plt.title("Confusion Matrix")
 plt.colorbar()
-tick_marks = np.arange(len(np.unique(y_true)))
-plt.xticks(tick_marks, [f"Class_{i}" for i in range(len(np.unique(y_true)))], rotation=45)
-plt.yticks(tick_marks, [f"Class_{i}" for i in range(len(np.unique(y_true)))])
+plt.xticks(np.arange(num_classes), [f"Class_{i}" for i in range(num_classes)], rotation=45)
+plt.yticks(np.arange(num_classes), [f"Class_{i}" for i in range(num_classes)])
+plt.ylabel("True Label")
+plt.xlabel("Predicted Label")
 
 # Add values inside the confusion matrix
 thresh = conf_matrix.max() / 2
