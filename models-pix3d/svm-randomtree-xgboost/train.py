@@ -10,9 +10,6 @@ from sklearn.metrics import (accuracy_score, confusion_matrix, precision_score, 
 import trimesh
 from tqdm import tqdm
 from sklearn.preprocessing import LabelEncoder
-import matplotlib.pyplot as plt
-import seaborn as sns
-from sklearn.preprocessing import OneHotEncoder
 
 # Load labels from Excel file
 label_file = 'datasets/pix3d/label/Final_Validated_Regularity_Levels.xlsx'
@@ -82,28 +79,7 @@ models = {
     "XGBoost": XGBClassifier(use_label_encoder=False, eval_metric='mlogloss')
 }
 
-# Directory to save results
-results_dir = "datasets/pix3d"
-os.makedirs(results_dir, exist_ok=True)
-
-# Function to plot and save confusion matrix
-def save_confusion_matrix(conf_matrix, model_name, labels, save_path):
-    plt.figure(figsize=(8, 6))
-    sns.heatmap(conf_matrix, annot=True, fmt='d', cmap='Blues', xticklabels=labels, yticklabels=labels)
-    plt.title(f"Confusion Matrix for {model_name}")
-    plt.xlabel("Predicted")
-    plt.ylabel("Actual")
-    plt.tight_layout()
-    plt.savefig(save_path)
-    plt.close()
-
-
-# One-hot encode y_test for AUC-ROC calculation
-encoder = OneHotEncoder(sparse=False)
-y_test_onehot = encoder.fit_transform(y_test.reshape(-1, 1))
-
 # Train and evaluate each model
-all_metrics = []
 for model_name, model in models.items():
     print(f"\nTraining {model_name}...")
     model.fit(X_train, y_train)
@@ -112,6 +88,7 @@ for model_name, model in models.items():
     # Ensure probabilities have correct shape
     if hasattr(model, "predict_proba"):
         y_pred_proba = model.predict_proba(X_test)
+        # If there are missing columns for some classes, add them as zero columns
         if y_pred_proba.shape[1] != num_classes:
             full_probs = np.zeros((y_pred_proba.shape[0], num_classes))
             full_probs[:, :y_pred_proba.shape[1]] = y_pred_proba
@@ -119,40 +96,34 @@ for model_name, model in models.items():
     else:
         y_pred_proba = None
 
-    # Metrics
+    # Accuracy
     accuracy = accuracy_score(y_test, y_pred)
+    print(f"\n{model_name} Accuracy: {accuracy:.2f}")
+
+    # Confusion Matrix
     conf_matrix = confusion_matrix(y_test, y_pred)
+    print(f"{model_name} Confusion Matrix:\n{conf_matrix}")
+    
+    # Precision, Recall, F1 Score
     precision = precision_score(y_test, y_pred, average='weighted', zero_division=1)
     recall = recall_score(y_test, y_pred, average='weighted', zero_division=1)
     f1 = f1_score(y_test, y_pred, average='weighted', zero_division=1)
+    print(f"{model_name} Precision: {precision:.2f}")
+    print(f"{model_name} Recall (Sensitivity): {recall:.2f}")
+    print(f"{model_name} F1 Score: {f1:.2f}")
     
+    # AUC-ROC and Log Loss (requires probability estimates)
     if y_pred_proba is not None:
         try:
-            # Use one-hot encoded y_test for AUC-ROC
-            auc_roc = roc_auc_score(y_test_onehot, y_pred_proba, multi_class='ovr', average="weighted")
-        except ValueError as e:
-            print(f"AUC-ROC calculation failed for {model_name}: {e}")
-            auc_roc = "N/A"
+            auc_roc = roc_auc_score(y_test, y_pred_proba, multi_class='ovr', average="weighted")
+        except ValueError:
+            auc_roc = "N/A (issue with class probabilities)"
         try:
             logloss = log_loss(y_test, y_pred_proba, labels=np.arange(num_classes))
         except ValueError:
-            logloss = "N/A"
+            logloss = "N/A (issue with log loss calculation)"
+        print(f"{model_name} AUC-ROC: {auc_roc}")
+        print(f"{model_name} Log Loss: {logloss}")
     else:
-        auc_roc, logloss = "N/A", "N/A"
-    
-    # Save metrics
-    metrics = {
-        "Model": model_name,
-        "Accuracy": accuracy,
-        "Precision": precision,
-        "Recall": recall,
-        "F1 Score": f1,
-        "AUC-ROC": auc_roc,
-        "Log Loss": logloss
-    }
-    all_metrics.append(metrics)
-    
-    # Save confusion matrix as image
-    conf_matrix_image_path = os.path.join(results_dir, f"{model_name}_confusion_matrix.png")
-    save_confusion_matrix(conf_matrix, model_name, label_encoder.classes_, conf_matrix_image_path)
-    print(f"Confusion matrix image saved for {model_name} at {conf_matrix_image_path}")
+        print(f"{model_name} AUC-ROC: N/A (no probability estimates)")
+        print(f"{model_name} Log Loss: N/A (no probability estimates)")
