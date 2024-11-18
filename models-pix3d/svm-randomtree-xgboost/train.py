@@ -10,6 +10,9 @@ from sklearn.metrics import (accuracy_score, confusion_matrix, precision_score, 
 import trimesh
 from tqdm import tqdm
 from sklearn.preprocessing import LabelEncoder
+import matplotlib.pyplot as plt
+import seaborn as sns
+from sklearn.preprocessing import OneHotEncoder
 
 # Load labels from Excel file
 label_file = 'datasets/pix3d/label/Final_Validated_Regularity_Levels.xlsx'
@@ -83,6 +86,22 @@ models = {
 results_dir = "datasets/pix3d"
 os.makedirs(results_dir, exist_ok=True)
 
+# Function to plot and save confusion matrix
+def save_confusion_matrix(conf_matrix, model_name, labels, save_path):
+    plt.figure(figsize=(8, 6))
+    sns.heatmap(conf_matrix, annot=True, fmt='d', cmap='Blues', xticklabels=labels, yticklabels=labels)
+    plt.title(f"Confusion Matrix for {model_name}")
+    plt.xlabel("Predicted")
+    plt.ylabel("Actual")
+    plt.tight_layout()
+    plt.savefig(save_path)
+    plt.close()
+
+
+# One-hot encode y_test for AUC-ROC calculation
+encoder = OneHotEncoder(sparse=False)
+y_test_onehot = encoder.fit_transform(y_test.reshape(-1, 1))
+
 # Train and evaluate each model
 all_metrics = []
 for model_name, model in models.items():
@@ -93,7 +112,6 @@ for model_name, model in models.items():
     # Ensure probabilities have correct shape
     if hasattr(model, "predict_proba"):
         y_pred_proba = model.predict_proba(X_test)
-        # If there are missing columns for some classes, add them as zero columns
         if y_pred_proba.shape[1] != num_classes:
             full_probs = np.zeros((y_pred_proba.shape[0], num_classes))
             full_probs[:, :y_pred_proba.shape[1]] = y_pred_proba
@@ -110,8 +128,10 @@ for model_name, model in models.items():
     
     if y_pred_proba is not None:
         try:
-            auc_roc = roc_auc_score(y_test, y_pred_proba, multi_class='ovr', average="weighted")
-        except ValueError:
+            # Use one-hot encoded y_test for AUC-ROC
+            auc_roc = roc_auc_score(y_test_onehot, y_pred_proba, multi_class='ovr', average="weighted")
+        except ValueError as e:
+            print(f"AUC-ROC calculation failed for {model_name}: {e}")
             auc_roc = "N/A"
         try:
             logloss = log_loss(y_test, y_pred_proba, labels=np.arange(num_classes))
@@ -132,12 +152,7 @@ for model_name, model in models.items():
     }
     all_metrics.append(metrics)
     
-    # Save confusion matrix
-    conf_matrix_path = os.path.join(results_dir, f"{model_name}_confusion_matrix.csv")
-    pd.DataFrame(conf_matrix).to_csv(conf_matrix_path, index=False)
-    print(f"Confusion matrix saved for {model_name} at {conf_matrix_path}")
-
-# Save all metrics to a CSV file
-metrics_path = os.path.join(results_dir, "all_metrics.csv")
-pd.DataFrame(all_metrics).to_csv(metrics_path, index=False)
-print(f"All metrics saved at {metrics_path}")
+    # Save confusion matrix as image
+    conf_matrix_image_path = os.path.join(results_dir, f"{model_name}_confusion_matrix.png")
+    save_confusion_matrix(conf_matrix, model_name, label_encoder.classes_, conf_matrix_image_path)
+    print(f"Confusion matrix image saved for {model_name} at {conf_matrix_image_path}")
