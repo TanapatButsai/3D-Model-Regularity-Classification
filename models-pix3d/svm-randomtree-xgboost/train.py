@@ -79,7 +79,12 @@ models = {
     "XGBoost": XGBClassifier(use_label_encoder=False, eval_metric='mlogloss')
 }
 
+# Directory to save results
+results_dir = "datasets/pix3d"
+os.makedirs(results_dir, exist_ok=True)
+
 # Train and evaluate each model
+all_metrics = []
 for model_name, model in models.items():
     print(f"\nTraining {model_name}...")
     model.fit(X_train, y_train)
@@ -96,34 +101,43 @@ for model_name, model in models.items():
     else:
         y_pred_proba = None
 
-    # Accuracy
+    # Metrics
     accuracy = accuracy_score(y_test, y_pred)
-    print(f"\n{model_name} Accuracy: {accuracy:.2f}")
-
-    # Confusion Matrix
     conf_matrix = confusion_matrix(y_test, y_pred)
-    print(f"{model_name} Confusion Matrix:\n{conf_matrix}")
-    
-    # Precision, Recall, F1 Score
     precision = precision_score(y_test, y_pred, average='weighted', zero_division=1)
     recall = recall_score(y_test, y_pred, average='weighted', zero_division=1)
     f1 = f1_score(y_test, y_pred, average='weighted', zero_division=1)
-    print(f"{model_name} Precision: {precision:.2f}")
-    print(f"{model_name} Recall (Sensitivity): {recall:.2f}")
-    print(f"{model_name} F1 Score: {f1:.2f}")
     
-    # AUC-ROC and Log Loss (requires probability estimates)
     if y_pred_proba is not None:
         try:
             auc_roc = roc_auc_score(y_test, y_pred_proba, multi_class='ovr', average="weighted")
         except ValueError:
-            auc_roc = "N/A (issue with class probabilities)"
+            auc_roc = "N/A"
         try:
             logloss = log_loss(y_test, y_pred_proba, labels=np.arange(num_classes))
         except ValueError:
-            logloss = "N/A (issue with log loss calculation)"
-        print(f"{model_name} AUC-ROC: {auc_roc}")
-        print(f"{model_name} Log Loss: {logloss}")
+            logloss = "N/A"
     else:
-        print(f"{model_name} AUC-ROC: N/A (no probability estimates)")
-        print(f"{model_name} Log Loss: N/A (no probability estimates)")
+        auc_roc, logloss = "N/A", "N/A"
+    
+    # Save metrics
+    metrics = {
+        "Model": model_name,
+        "Accuracy": accuracy,
+        "Precision": precision,
+        "Recall": recall,
+        "F1 Score": f1,
+        "AUC-ROC": auc_roc,
+        "Log Loss": logloss
+    }
+    all_metrics.append(metrics)
+    
+    # Save confusion matrix
+    conf_matrix_path = os.path.join(results_dir, f"{model_name}_confusion_matrix.csv")
+    pd.DataFrame(conf_matrix).to_csv(conf_matrix_path, index=False)
+    print(f"Confusion matrix saved for {model_name} at {conf_matrix_path}")
+
+# Save all metrics to a CSV file
+metrics_path = os.path.join(results_dir, "all_metrics.csv")
+pd.DataFrame(all_metrics).to_csv(metrics_path, index=False)
+print(f"All metrics saved at {metrics_path}")
