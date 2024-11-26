@@ -15,15 +15,25 @@ import torch.nn.functional as F
 config = {
     "base_dir": 'datasets/3d-future-dataset/obj-3d.future',
     "label_file_path": 'datasets/3d-future-dataset/label/Final_Validated_Regularity_Levels.xlsx',
-    "max_data_points": 1000,
+    "max_data_points": 13000,
     "num_points": 1024,
     "batch_size": 32,
     "num_classes": 4,
-    "num_epochs": 1,
+    "num_epochs": 100,
     "learning_rate": 0.0005,
     "weight_decay": 1e-5,
     "device": 'cuda' if torch.cuda.is_available() else 'cpu',
 }
+
+# Data Augmentation
+def augment_pointcloud(points):
+    # Apply random rotation, scaling, and jittering for robustness
+    rotation_matrix = trimesh.transformations.random_rotation_matrix()[:3, :3]
+    points = np.dot(points, rotation_matrix.T)
+    points += np.random.normal(0, 0.02, points.shape)  # Jittering
+    scale_factor = np.random.uniform(0.8, 1.2)  # Random scaling
+    points *= scale_factor
+    return points
 
 # PointNet++ Model
 class PointNetPlusPlus(nn.Module):
@@ -75,6 +85,7 @@ class PointCloudDataset(Dataset):
             raise ValueError("Invalid mesh format")
 
         points = mesh.sample(self.num_points)
+        points = augment_pointcloud(points)  # Apply augmentation
         points = torch.tensor(points, dtype=torch.float32)
         return points.T, label
 

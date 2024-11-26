@@ -8,10 +8,12 @@ from sklearn.model_selection import train_test_split
 from sklearn.preprocessing import LabelEncoder
 from sklearn.metrics import (
     accuracy_score, confusion_matrix, precision_score, recall_score,
-    f1_score, roc_auc_score
+    f1_score, roc_auc_score, log_loss
 )
+from torch.utils.data import DataLoader
 import trimesh
 from tqdm import tqdm
+import torch.nn.functional as F
 
 # Configuration
 config = {
@@ -85,47 +87,48 @@ X_test = torch.tensor(X_test, dtype=torch.float32).permute(0, 2, 1)
 y_train = torch.tensor(y_train, dtype=torch.long)
 y_test = torch.tensor(y_test, dtype=torch.long)
 
-train_loader = torch.utils.data.DataLoader(
+train_loader = DataLoader(
     torch.utils.data.TensorDataset(X_train, y_train),
     batch_size=config["batch_size"], shuffle=True
 )
 
-test_loader = torch.utils.data.DataLoader(
+test_loader = DataLoader(
     torch.utils.data.TensorDataset(X_test, y_test),
     batch_size=config["batch_size"], shuffle=False
 )
 
-# PointNet Model
-class PointNet(nn.Module):
+# PointNet++ Model
+class PointNetPlusPlus(nn.Module):
     def __init__(self, num_classes):
-        super(PointNet, self).__init__()
+        super(PointNetPlusPlus, self).__init__()
         self.conv1 = nn.Conv1d(3, 64, 1)
         self.conv2 = nn.Conv1d(64, 128, 1)
-        self.conv3 = nn.Conv1d(128, 1024, 1)
-        self.fc1 = nn.Linear(1024, 512)
-        self.fc2 = nn.Linear(512, 256)
-        self.fc3 = nn.Linear(256, num_classes)
+        self.conv3 = nn.Conv1d(128, 256, 1)
+        self.fc1 = nn.Linear(256, 128)
+        self.fc2 = nn.Linear(128, 64)
+        self.fc3 = nn.Linear(64, num_classes)
         self.relu = nn.ReLU()
+        self.dropout = nn.Dropout(p=0.3)
         self.bn1 = nn.BatchNorm1d(64)
         self.bn2 = nn.BatchNorm1d(128)
-        self.bn3 = nn.BatchNorm1d(1024)
-        self.bn4 = nn.BatchNorm1d(512)
-        self.bn5 = nn.BatchNorm1d(256)
-        self.dropout = nn.Dropout(p=0.3)
+        self.bn3 = nn.BatchNorm1d(256)
+        self.bn_fc1 = nn.BatchNorm1d(128)
+        self.bn_fc2 = nn.BatchNorm1d(64)
 
     def forward(self, x):
+        # Local feature learning
         x = self.relu(self.bn1(self.conv1(x)))
         x = self.relu(self.bn2(self.conv2(x)))
         x = self.relu(self.bn3(self.conv3(x)))
-        x = torch.max(x, 2)[0]
-        x = self.relu(self.bn4(self.fc1(x)))
+        x = torch.max(x, 2)[0]  # Global Max Pooling
+        x = self.relu(self.bn_fc1(self.fc1(x)))
         x = self.dropout(x)
-        x = self.relu(self.bn5(self.fc2(x)))
+        x = self.relu(self.bn_fc2(self.fc2(x)))
         x = self.fc3(x)
         return x
 
 # Initialize model, loss, and optimizer
-model = PointNet(num_classes).to(config["device"])
+model = PointNetPlusPlus(num_classes).to(config["device"])
 criterion = nn.CrossEntropyLoss()
 optimizer = optim.Adam(model.parameters(), lr=config["learning_rate"])
 
@@ -151,7 +154,7 @@ with torch.no_grad():
     for inputs, labels in test_loader:
         inputs, labels = inputs.to(config["device"]), labels.to(config["device"])
         outputs = model(inputs)
-        probabilities = torch.nn.functional.softmax(outputs, dim=1)
+        probabilities = F.softmax(outputs, dim=1)
         _, predicted = torch.max(outputs, 1)
         y_true.extend(labels.cpu().numpy())
         y_pred.extend(predicted.cpu().numpy())
@@ -164,18 +167,17 @@ recall = recall_score(y_true, y_pred, average='weighted', zero_division=1)
 f1 = f1_score(y_true, y_pred, average='weighted', zero_division=1)
 conf_matrix = confusion_matrix(y_true, y_pred)
 
-# AUC-ROC Calculation
+# AUC-ROC and Log Loss Calculation
 y_true_one_hot = np.zeros((len(y_true), num_classes))
 y_true_one_hot[np.arange(len(y_true)), y_true] = 1
-try:
-    auc_roc = roc_auc_score(y_true_one_hot, np.array(y_prob), multi_class='ovr', average='weighted')
-except ValueError as e:
-    auc_roc = f"N/A ({str(e)})"
+auc_roc = roc_auc_score(y_true_one_hot, np.array(y_prob), multi_class='ovr', average='weighted')
+logloss = log_loss(y_true, y_prob)
 
 # Print Metrics
 print(f"Accuracy: {accuracy:.2f}")
 print(f"Precision: {precision:.2f}")
 print(f"Recall: {recall:.2f}")
 print(f"F1 Score: {f1:.2f}")
-print(f"AUC-ROC: {auc_roc}")
+print(f"AUC-ROC: {auc_roc:.2f}")
+print(f"Log Loss: {logloss:.4f}")
 print(f"Confusion Matrix:\n{conf_matrix}")
