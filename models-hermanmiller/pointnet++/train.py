@@ -4,9 +4,10 @@ import torch.nn as nn
 import torch.optim as optim
 import numpy as np
 import pandas as pd
+import matplotlib.pyplot as plt
 from sklearn.metrics import (
-    accuracy_score, confusion_matrix, precision_score,
-    recall_score, f1_score, roc_auc_score, log_loss, classification_report
+    accuracy_score, confusion_matrix, ConfusionMatrixDisplay, precision_score,
+    recall_score, f1_score, roc_auc_score, classification_report
 )
 from sklearn.model_selection import train_test_split
 import trimesh
@@ -14,8 +15,7 @@ from tqdm import tqdm
 import torch.nn.functional as F
 from torch.utils.data import DataLoader
 from imblearn.over_sampling import SMOTE
-from sklearn.preprocessing import LabelBinarizer  # Add this import
-
+from sklearn.preprocessing import LabelBinarizer
 
 # Configuration
 config = {
@@ -27,7 +27,8 @@ config = {
     "learning_rate": 0.0005,
     "weight_decay": 1e-5,
     "device": "cuda" if torch.cuda.is_available() else "cpu",
-    "num_classes": 4
+    "num_classes": 4,
+    "conf_matrix_path": "datasets/hermanmiller/conf_matrix.png"
 }
 
 # Load 3D point cloud from OBJ file
@@ -160,6 +161,14 @@ def evaluate_model(model, test_loader, config):
     print(f"Recall: {recall:.2f}")
     print(f"F1 Score: {f1:.2f}")
     print(f"AUC-ROC: {auc_roc:.2f}")
+
+    # Save confusion matrix as image
+    cm = confusion_matrix(all_labels, all_preds)
+    disp = ConfusionMatrixDisplay(confusion_matrix=cm)
+    disp.plot(cmap=plt.cm.Blues)
+    plt.title("Confusion Matrix")
+    plt.savefig(config["conf_matrix_path"])
+    plt.close()
 
 if __name__ == "__main__":
     train_model(config)
