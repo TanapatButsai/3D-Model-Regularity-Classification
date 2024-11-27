@@ -5,10 +5,12 @@ from sklearn.model_selection import train_test_split
 from sklearn.svm import SVC
 from sklearn.ensemble import RandomForestClassifier
 from xgboost import XGBClassifier
-from sklearn.metrics import accuracy_score
+from sklearn.metrics import (accuracy_score, confusion_matrix, precision_score, recall_score, f1_score, roc_auc_score,
+                             log_loss, roc_curve, auc)
 import trimesh
 from tqdm import tqdm
 from sklearn.preprocessing import LabelEncoder
+import matplotlib.pyplot as plt
 
 # Load labels from Excel file
 label_file = 'datasets/abo/label/Final_Validated_Regularity_Levels.xlsx'
@@ -16,7 +18,8 @@ label_data = pd.read_excel(label_file)
 
 # Define MAX_DATA_POINTS
 MAX = len(label_data)
-MAX_DATA_POINTS = MAX # You can change this number based on how many data points you want to train with
+MAX_DATA_POINTS = MAX  # You can change this number based on how many data points you want to train with
+# MAX_DATA_POINTS = 100  # You can change this number based on how many data points you want to train with
 
 # Limit the number of data points based on MAX_DATA_POINTS
 if len(label_data) > MAX_DATA_POINTS:
@@ -49,10 +52,10 @@ targets = []
 for index, row in tqdm(labels.iterrows(), total=len(labels)):
     object_id = row['Object ID (Dataset Original Object ID)']
     regularity_level = row['Final Regularity Level']
-    
+
     # Construct the path
     obj_file = os.path.join(obj_folder, object_id.strip(), f'{object_id.strip()}.obj')
-    
+
     # Extract features
     if os.path.isfile(obj_file):
         feature_vector = extract_features_from_obj(obj_file)
@@ -80,40 +83,99 @@ print("Unique labels after encoding:", unique_labels)
 expected_labels = np.arange(len(unique_labels))
 if not np.array_equal(unique_labels, expected_labels):
     print("Warning: Missing labels detected. Expected labels:", expected_labels, "but got:", unique_labels)
-    # Optional: Consider filling missing labels with dummy samples or remove labels without enough samples
 
 # Split dataset into training and testing sets
 X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
 
 # Initialize classifiers
-svm_clf = SVC()
+svm_clf = SVC(probability=True)
 rf_clf = RandomForestClassifier()
 xgb_clf = XGBClassifier(eval_metric='mlogloss')
 
+# Function to evaluate model
+# Updated evaluate_model function to save results
+# Updated evaluate_model function to save confusion matrix as an image
+def evaluate_model(clf, X_test, y_test, model_name, results_path="datasets/abo/label/results_svm_random_xg.csv"):
+    predictions = clf.predict(X_test)
+    prob_predictions = clf.predict_proba(X_test) if hasattr(clf, 'predict_proba') else None
+
+    accuracy = accuracy_score(y_test, predictions)
+    conf_matrix = confusion_matrix(y_test, predictions)
+    precision = precision_score(y_test, predictions, average='weighted')
+    recall = recall_score(y_test, predictions, average='weighted')
+    f1 = f1_score(y_test, predictions, average='weighted')
+    auc_roc = roc_auc_score(y_test, prob_predictions, multi_class='ovr') if prob_predictions is not None else 'N/A'
+    logloss = log_loss(y_test, prob_predictions) if prob_predictions is not None else 'N/A'
+
+    print(f"\n{model_name} Evaluation:")
+    print(f"Accuracy: {accuracy:.2f}")
+    print(f"Confusion Matrix:\n{conf_matrix}")
+    print(f"Precision: {precision:.2f}")
+    print(f"Recall: {recall:.2f}")
+    print(f"F1 Score: {f1:.2f}")
+    print(f"AUC-ROC: {auc_roc}")
+    print(f"Log Loss: {logloss}")
+
+    # Save the confusion matrix as an image
+    conf_matrix_image_path = f"datasets/abo/label/{model_name}_matrix.png"
+    plt.figure(figsize=(10, 8))
+    plt.imshow(conf_matrix, interpolation="nearest", cmap=plt.cm.Blues)
+    plt.title(f"{model_name} Confusion Matrix")
+    plt.colorbar()
+    tick_marks = np.arange(len(np.unique(y_test)))
+    plt.xticks(tick_marks, [f"Class_{i}" for i in range(len(np.unique(y_test)))], rotation=45)
+    plt.yticks(tick_marks, [f"Class_{i}" for i in range(len(np.unique(y_test)))])
+    plt.ylabel("True Label")
+    plt.xlabel("Predicted Label")
+
+    # Add values inside the confusion matrix
+    thresh = conf_matrix.max() / 2
+    for i in range(conf_matrix.shape[0]):
+        for j in range(conf_matrix.shape[1]):
+            plt.text(
+                j, i, format(conf_matrix[i, j], "d"),
+                horizontalalignment="center",
+                color="white" if conf_matrix[i, j] > thresh else "black"
+            )
+
+    plt.tight_layout()
+    plt.savefig(conf_matrix_image_path)
+    plt.close()
+    print(f"Confusion matrix image saved to {conf_matrix_image_path}")
+
+    # Prepare the results as a dictionary
+    results = {
+        "Model": model_name,
+        "Accuracy": accuracy,
+        "Precision": precision,
+        "Recall": recall,
+        "F1 Score": f1,
+        "AUC-ROC": auc_roc,
+        "Log Loss": logloss
+    }
+
+    # Save the results to the CSV file
+    if not os.path.exists(results_path):
+        # If the file does not exist, create it and write headers
+        pd.DataFrame([results]).to_csv(results_path, index=False)
+    else:
+        # If the file exists, append the new results
+        pd.DataFrame([results]).to_csv(results_path, mode='a', header=False, index=False)
+
+    print(f"Results saved to {results_path}")
+
+
 # Train and evaluate SVM
 svm_clf.fit(X_train, y_train)
-svm_predictions = svm_clf.predict(X_test)
-svm_accuracy = accuracy_score(y_test, svm_predictions)
-print(f"SVM Accuracy: {svm_accuracy:.2f}")
+evaluate_model(svm_clf, X_test, y_test, "SVM")
 
 # Train and evaluate Random Forest
 rf_clf.fit(X_train, y_train)
-rf_predictions = rf_clf.predict(X_test)
-rf_accuracy = accuracy_score(y_test, rf_predictions)
-print(f"Random Forest Accuracy: {rf_accuracy:.2f}")
+evaluate_model(rf_clf, X_test, y_test, "Random Forest")
 
 # Train and evaluate XGBoost
 try:
     xgb_clf.fit(X_train, y_train)
-    xgb_predictions = xgb_clf.predict(X_test)
-    xgb_accuracy = accuracy_score(y_test, xgb_predictions)
-    print(f"XGBoost Accuracy: {xgb_accuracy:.2f}")
+    evaluate_model(xgb_clf, X_test, y_test, "XGBoost")
 except ValueError as e:
     print(f"XGBoost training error: {e}")
-
-# Compare model accuracies
-print("\nModel Comparison:")
-print(f"SVM Accuracy: {svm_accuracy:.2f}")
-print(f"Random Forest Accuracy: {rf_accuracy:.2f}")
-if 'xgb_accuracy' in locals():
-    print(f"XGBoost Accuracy: {xgb_accuracy:.2f}")
