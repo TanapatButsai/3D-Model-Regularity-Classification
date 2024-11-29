@@ -1,181 +1,228 @@
 import os
+import pandas as pd
+import numpy as np
 import torch
 import torch.nn as nn
 import torch.optim as optim
-import numpy as np
-import pandas as pd
 from sklearn.metrics import (
     accuracy_score, confusion_matrix, precision_score,
     recall_score, f1_score, roc_auc_score, log_loss
 )
 from sklearn.model_selection import train_test_split
-from sklearn.preprocessing import LabelEncoder
-import trimesh
-import matplotlib.pyplot as plt
 from tqdm import tqdm
+from torch.utils.data import DataLoader, Dataset
+import trimesh
+import torch.nn.functional as F
+import matplotlib.pyplot as plt
 
 # Configuration
 config = {
-    "label_file": "datasets/abo/label/Final_Validated_Regularity_Levels.xlsx",
-    "obj_folder": "datasets/abo/obj-ABO",
+    "base_dir": 'datasets/abo/obj-ABO',
+    "label_file_path": 'datasets/abo/label/Final_Validated_Regularity_Levels.xlsx',
+    "max_data_points": 7800,
     "num_points": 1024,
     "batch_size": 32,
-    "num_epochs": 80,
+    "num_classes": 5,
+    "num_epochs": 100,
     "learning_rate": 0.0005,
     "weight_decay": 1e-5,
-    "dropout_rate": 0.4,
-    "test_size": 0.2,
-    "device": "cuda" if torch.cuda.is_available() else "cpu",
-    "results_folder": "datasets/abo/label"
+    "device": 'cuda' if torch.cuda.is_available() else 'cpu',
+    "results_folder": "datasets/abo/results"
 }
 
 os.makedirs(config["results_folder"], exist_ok=True)
 
-# Load point clouds from OBJ files
-def load_pointcloud_from_obj(file_path, num_points):
-    try:
-        mesh = trimesh.load(file_path, force='mesh')
-        return mesh.sample(num_points)
-    except Exception as e:
-        print(f"Error loading {file_path}: {e}")
-        return None
-
-# Augment data with rotations and noise
+# Data Augmentation
 def augment_pointcloud(points):
     rotation_matrix = trimesh.transformations.random_rotation_matrix()[:3, :3]
     points = np.dot(points, rotation_matrix.T)
-    points += np.random.normal(0, 0.02, points.shape)
-    scale_factor = np.random.uniform(0.8, 1.2)
+    points += np.random.normal(0, 0.02, points.shape)  # Jittering
+    scale_factor = np.random.uniform(0.8, 1.2)  # Random scaling
     points *= scale_factor
     return points
 
-# Data Preprocessing
-def preprocess_data(config):
-    labels_df = pd.read_excel(config["label_file"])
-    point_clouds, labels = [], []
-
-    for _, row in tqdm(labels_df.iterrows(), total=len(labels_df)):
-        object_id = row["Object ID (Dataset Original Object ID)"]
-        label = row["Final Regularity Level"]
-        obj_file = os.path.join(config["obj_folder"], object_id.strip(), f"{object_id.strip()}.obj")
-        
-        if os.path.isfile(obj_file):
-            points = load_pointcloud_from_obj(obj_file, config["num_points"])
-            if points is not None:
-                point_clouds.append(augment_pointcloud(points))
-                labels.append(label)
-
-    X = np.array(point_clouds)
-    y = np.array(labels)
-    label_encoder = LabelEncoder()
-    y = label_encoder.fit_transform(y)
-    return train_test_split(
-        torch.tensor(X, dtype=torch.float32).permute(0, 2, 1),
-        torch.tensor(y, dtype=torch.long),
-        test_size=config["test_size"], random_state=42
-    )
-
-# PointNet++ Set Abstraction Layer
-class SetAbstraction(nn.Module):
-    def __init__(self, in_channels, out_channels, num_points):
-        super(SetAbstraction, self).__init__()
-        self.conv1 = nn.Conv1d(in_channels, out_channels // 2, 1)
-        self.conv2 = nn.Conv1d(out_channels // 2, out_channels, 1)
-        self.bn1 = nn.BatchNorm1d(out_channels // 2)
-        self.bn2 = nn.BatchNorm1d(out_channels)
+# PointNet++ Model
+class PointNetPlusPlus(nn.Module):
+    def __init__(self, num_classes):
+        super(PointNetPlusPlus, self).__init__()
+        self.conv1 = nn.Conv1d(3, 64, 1)
+        self.conv2 = nn.Conv1d(64, 128, 1)
+        self.conv3 = nn.Conv1d(128, 256, 1)
+        self.fc1 = nn.Linear(256, 128)
+        self.fc2 = nn.Linear(128, 64)
+        self.fc3 = nn.Linear(64, num_classes)
         self.relu = nn.ReLU()
-        self.num_points = num_points
+        self.dropout = nn.Dropout(p=0.4)
+        self.bn1 = nn.BatchNorm1d(64)
+        self.bn2 = nn.BatchNorm1d(128)
+        self.bn3 = nn.BatchNorm1d(256)
+        self.bn_fc1 = nn.BatchNorm1d(128)
+        self.bn_fc2 = nn.BatchNorm1d(64)
 
     def forward(self, x):
         x = self.relu(self.bn1(self.conv1(x)))
         x = self.relu(self.bn2(self.conv2(x)))
-        x = torch.max(x, dim=-1)[0]
-        return x.unsqueeze(-1)
-
-# PointNet++ Model
-class PointNetPlusPlus(nn.Module):
-    def __init__(self, num_classes, num_points, dropout_rate):
-        super(PointNetPlusPlus, self).__init__()
-        self.sa1 = SetAbstraction(3, 64, num_points // 2)
-        self.sa2 = SetAbstraction(64, 128, num_points // 4)
-        self.sa3 = SetAbstraction(128, 256, num_points // 8)
-        self.fc1 = nn.Linear(256, 128)
-        self.fc2 = nn.Linear(128, 64)
-        self.fc3 = nn.Linear(64, num_classes)
-        self.dropout = nn.Dropout(dropout_rate)
-        self.relu = nn.ReLU()
-
-    def forward(self, x):
-        x = self.sa1(x)
-        x = self.sa2(x)
-        x = self.sa3(x)
-        x = x.squeeze(-1)  # Flatten features
-        x = self.dropout(self.relu(self.fc1(x)))
-        x = self.dropout(self.relu(self.fc2(x)))
+        x = self.relu(self.bn3(self.conv3(x)))
+        x = torch.max(x, 2)[0]  # Global max pooling
+        x = self.relu(self.bn_fc1(self.fc1(x)))
+        x = self.dropout(x)
+        x = self.relu(self.bn_fc2(self.fc2(x)))
         x = self.fc3(x)
         return x
 
-# Train the Model
-def train_model():
-    X_train, X_test, y_train, y_test = preprocess_data(config)
-    train_loader = torch.utils.data.DataLoader(torch.utils.data.TensorDataset(X_train, y_train),
-                                               batch_size=config["batch_size"], shuffle=True)
-    test_loader = torch.utils.data.DataLoader(torch.utils.data.TensorDataset(X_test, y_test),
-                                              batch_size=config["batch_size"], shuffle=False)
+# Dataset class for loading and preprocessing data
+class PointCloudDataset(Dataset):
+    def __init__(self, labels_df, base_dir, num_points):
+        self.labels_df = labels_df
+        self.base_dir = base_dir
+        self.num_points = num_points
 
-    model = PointNetPlusPlus(num_classes=4, num_points=config["num_points"], dropout_rate=config["dropout_rate"]).to(config["device"])
-    class_weights = 1.0 / torch.bincount(y_train)
-    criterion = nn.CrossEntropyLoss(weight=class_weights.to(config["device"]))
-    optimizer = optim.AdamW(model.parameters(), lr=config["learning_rate"], weight_decay=config["weight_decay"])
+    def __len__(self):
+        return len(self.labels_df)
 
-    for epoch in range(config["num_epochs"]):
-        model.train()
-        total_loss = 0
-        for X_batch, y_batch in train_loader:
-            X_batch, y_batch = X_batch.to(config["device"]), y_batch.to(config["device"])
-            optimizer.zero_grad()
-            outputs = model(X_batch)
-            loss = criterion(outputs, y_batch)
-            loss.backward()
-            optimizer.step()
-            total_loss += loss.item()
-        print(f"Epoch [{epoch+1}/{config['num_epochs']}], Loss: {total_loss/len(train_loader):.4f}")
+    def __getitem__(self, idx):
+        row = self.labels_df.iloc[idx]
+        obj_id = row['Object ID (Dataset Original Object ID)']
+        label = int(row['Final Regularity Level']) - 1
+        obj_file = os.path.join(self.base_dir, str(obj_id), f'{obj_id.strip()}.obj')
 
-    evaluate_model(model, test_loader, y_test)
+        mesh = trimesh.load(obj_file, force='mesh')
+        if not isinstance(mesh, trimesh.Trimesh):
+            raise ValueError("Invalid mesh format")
 
-# Evaluate the Model
-def evaluate_model(model, test_loader, y_test):
-    model.eval()
-    y_true, y_pred, y_prob = [], [], []
-    with torch.no_grad():
-        for X_batch, y_batch in test_loader:
-            X_batch, y_batch = X_batch.to(config["device"]), y_batch.to(config["device"])
-            outputs = model(X_batch)
-            prob = torch.softmax(outputs, dim=1)
-            pred = torch.argmax(prob, dim=1)
-            y_true.extend(y_batch.cpu().numpy())
-            y_pred.extend(pred.cpu().numpy())
-            y_prob.extend(prob.cpu().numpy())
+        points = mesh.sample(self.num_points)
+        points = augment_pointcloud(points)
+        points = torch.tensor(points, dtype=torch.float32)
+        return points.T, label
 
-    acc = accuracy_score(y_true, y_pred)
-    precision = precision_score(y_true, y_pred, average="weighted")
-    recall = recall_score(y_true, y_pred, average="weighted")
-    f1 = f1_score(y_true, y_pred, average="weighted")
-    auc = roc_auc_score(pd.get_dummies(y_true), y_prob, average="weighted", multi_class="ovr")
-    print(f"Accuracy: {acc:.4f}, Precision: {precision:.4f}, Recall: {recall:.4f}, F1 Score: {f1:.4f}, AUC: {auc:.4f}")
+# Load and preprocess data
+labels_df = pd.read_excel(config["label_file_path"])
+labels_df = labels_df[['Object ID (Dataset Original Object ID)', 'Final Regularity Level']]
+labels_df = labels_df.sample(n=min(config["max_data_points"], len(labels_df)), random_state=42)
 
-    # Save Confusion Matrix
-    cm = confusion_matrix(y_true, y_pred)
-    plt.figure(figsize=(8, 6))
-    plt.imshow(cm, cmap="Blues")
-    plt.colorbar()
-    plt.savefig(os.path.join(config["results_folder"], "confusion_matrix.png"))
-    plt.close()
+# Split dataset into training and testing sets
+train_df, test_df = train_test_split(labels_df, test_size=0.2, random_state=42, stratify=labels_df['Final Regularity Level'])
 
-    # Save Metrics
-    metrics = {"Accuracy": acc, "Precision": precision, "Recall": recall, "F1 Score": f1, "AUC": auc}
-    pd.DataFrame([metrics]).to_csv(os.path.join(config["results_folder"], "metrics.csv"), index=False)
+# Initialize dataset and dataloader
+train_dataset = PointCloudDataset(train_df, config["base_dir"], config["num_points"])
+test_dataset = PointCloudDataset(test_df, config["base_dir"], config["num_points"])
 
-# Run Training and Evaluation
-if __name__ == "__main__":
-    train_model()
+train_loader = DataLoader(train_dataset, batch_size=config["batch_size"], shuffle=True)
+test_loader = DataLoader(test_dataset, batch_size=config["batch_size"], shuffle=False)
+
+# Initialize model, loss, and optimizer
+model = PointNetPlusPlus(config["num_classes"]).to(config["device"])
+
+# Compute class weights
+unique_classes = sorted(train_df['Final Regularity Level'].unique() - 1)
+class_weights = np.zeros(config["num_classes"])
+for cls in unique_classes:
+    class_weights[cls] = 1.0 / (np.sum(train_df['Final Regularity Level'] - 1 == cls) + 1e-6)
+class_weights = torch.tensor(class_weights, dtype=torch.float32).to(config["device"])
+
+criterion = nn.CrossEntropyLoss(weight=class_weights)
+optimizer = optim.AdamW(model.parameters(), lr=config["learning_rate"], weight_decay=config["weight_decay"])
+scheduler = optim.lr_scheduler.CosineAnnealingWarmRestarts(optimizer, T_0=10, T_mult=2)
+
+# Training loop
+for epoch in range(config["num_epochs"]):
+    model.train()
+    running_loss = 0.0
+    for points, labels in tqdm(train_loader, desc=f"Epoch {epoch+1}/{config['num_epochs']}"):
+        points, labels = points.to(config["device"]), labels.to(config["device"])
+        optimizer.zero_grad()
+        outputs = model(points)
+        loss = criterion(outputs, labels)
+        loss.backward()
+        optimizer.step()
+        running_loss += loss.item()
+
+    scheduler.step()
+    print(f"Epoch {epoch+1}/{config['num_epochs']}, Loss: {running_loss/len(train_loader):.4f}")
+
+# Evaluation
+model.eval()
+y_true, y_pred, y_prob = [], [], []
+
+with torch.no_grad():
+    for points, labels in test_loader:
+        points, labels = points.to(config["device"]), labels.to(config["device"])
+        outputs = model(points)
+        probabilities = F.softmax(outputs, dim=1)
+        _, predicted = torch.max(outputs, 1)
+        y_true.extend(labels.cpu().numpy())
+        y_pred.extend(predicted.cpu().numpy())
+        y_prob.extend(probabilities.cpu().numpy())
+
+# Metrics
+accuracy = accuracy_score(y_true, y_pred)
+precision = precision_score(y_true, y_pred, average='weighted', zero_division=1)
+recall = recall_score(y_true, y_pred, average='weighted', zero_division=1)
+f1 = f1_score(y_true, y_pred, average='weighted', zero_division=1)
+conf_matrix = confusion_matrix(y_true, y_pred)
+
+# AUC-ROC Calculation with Error Handling
+try:
+    if len(np.unique(y_true)) > 1:  # Ensure diversity in y_true
+        y_true_one_hot = np.zeros((len(y_true), config["num_classes"]))
+        y_true_one_hot[np.arange(len(y_true)), y_true] = 1
+        auc_roc = roc_auc_score(
+            y_true_one_hot,
+            np.array(y_prob),
+            multi_class='ovr',
+            average='weighted',
+            labels=np.arange(config["num_classes"])
+        )
+    else:
+        auc_roc = 0.0  # Fallback value if only one class is present
+except Exception as e:
+    print(f"Error calculating AUC-ROC: {e}")
+    auc_roc = 0.0
+
+# Ensure y_prob is normalized (to avoid log_loss warnings)
+y_prob = np.array(y_prob)
+y_prob /= y_prob.sum(axis=1, keepdims=True)
+
+# Log Loss Calculation with Explicit Class Labels
+try:
+    logloss = log_loss(
+        y_true,
+        y_prob,
+        labels=np.arange(config["num_classes"])
+    )
+except ValueError as e:
+    print(f"Error calculating Log Loss: {e}")
+    logloss = None
+
+# Print Metrics
+print(f"Accuracy: {accuracy:.2f}")
+print(f"Precision: {precision:.2f}")
+print(f"Recall: {recall:.2f}")
+print(f"F1 Score: {f1:.2f}")
+print(f"AUC-ROC: {auc_roc:.2f}")
+if logloss is not None:
+    print(f"Log Loss: {logloss:.4f}")
+else:
+    print("Log Loss: Calculation skipped due to missing classes.")
+print(f"Confusion Matrix:\n{conf_matrix}")
+
+# Save Metrics
+metrics = {
+    "Accuracy": accuracy,
+    "Precision": precision,
+    "Recall": recall,
+    "F1 Score": f1,
+    "AUC-ROC": auc_roc,
+    "Log Loss": logloss if logloss is not None else "N/A"
+}
+pd.DataFrame([metrics]).to_csv(os.path.join(config["results_folder"], "metrics.csv"), index=False)
+
+# Save Confusion Matrix
+plt.figure(figsize=(8, 6))
+plt.imshow(conf_matrix, cmap="Blues", interpolation="nearest")
+plt.colorbar()
+plt.title("Confusion Matrix")
+plt.xlabel("Predicted Labels")
+plt.ylabel("True Labels")
+plt.savefig(os.path.join(config["results_folder"], "confusion_matrix.png"))
+plt.close()
