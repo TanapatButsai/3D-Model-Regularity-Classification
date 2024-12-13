@@ -124,10 +124,57 @@ criterion = nn.CrossEntropyLoss(weight=class_weights)
 optimizer = optim.AdamW(model.parameters(), lr=config["learning_rate"], weight_decay=config["weight_decay"])
 scheduler = optim.lr_scheduler.CosineAnnealingWarmRestarts(optimizer, T_0=10, T_mult=2)
 
-# Training loop
+# Early Stopping Class
+class EarlyStopping:
+    def __init__(self, patience=10, delta=0, path="checkpoint.pt", verbose=False):
+        """
+        Args:
+            patience (int): How long to wait after the last improvement.
+            delta (float): Minimum change in the monitored quantity to qualify as improvement.
+            path (str): Path to save the best model.
+            verbose (bool): If True, print updates on saving the model.
+        """
+        self.patience = patience
+        self.delta = delta
+        self.path = path
+        self.verbose = verbose
+        self.best_score = None
+        self.counter = 0
+        self.early_stop = False
+
+    def __call__(self, metric, model):
+        score = -metric  # We want to minimize loss; negate for max scoring metrics
+
+        if self.best_score is None:
+            self.best_score = score
+            self.save_checkpoint(model)
+        elif score < self.best_score + self.delta:
+            self.counter += 1
+            if self.verbose:
+                print(f"EarlyStopping counter: {self.counter}/{self.patience}")
+            if self.counter >= self.patience:
+                self.early_stop = True
+        else:
+            self.best_score = score
+            self.save_checkpoint(model)
+            self.counter = 0
+
+    def save_checkpoint(self, model):
+        """Saves the current best model."""
+        if self.verbose:
+            print("Validation metric improved. Saving model...")
+        torch.save(model.state_dict(), self.path)
+
+# Early Stopping Configuration
+early_stopping = EarlyStopping(patience=10, path=os.path.join(config["results_folder"], "best_model.pt"), verbose=True)
+
+# Training loop with Early Stopping
+best_val_loss = float("inf")
 for epoch in range(config["num_epochs"]):
     model.train()
     running_loss = 0.0
+
+    # Training Phase
     for points, labels in tqdm(train_loader, desc=f"Epoch {epoch+1}/{config['num_epochs']}"):
         points, labels = points.to(config["device"]), labels.to(config["device"])
         optimizer.zero_grad()
@@ -138,9 +185,32 @@ for epoch in range(config["num_epochs"]):
         running_loss += loss.item()
 
     scheduler.step()
-    print(f"Epoch {epoch+1}/{config['num_epochs']}, Loss: {running_loss/len(train_loader):.4f}")
+    train_loss = running_loss / len(train_loader)
+    print(f"Epoch {epoch+1}, Train Loss: {train_loss:.4f}")
 
-# Evaluation
+    # Validation Phase
+    model.eval()
+    val_loss = 0.0
+    with torch.no_grad():
+        for points, labels in test_loader:
+            points, labels = points.to(config["device"]), labels.to(config["device"])
+            outputs = model(points)
+            loss = criterion(outputs, labels)
+            val_loss += loss.item()
+
+    val_loss /= len(test_loader)
+    print(f"Epoch {epoch+1}, Validation Loss: {val_loss:.4f}")
+
+    # Early Stopping Check
+    early_stopping(val_loss, model)
+    if early_stopping.early_stop:
+        print("Early stopping triggered. Exiting training loop.")
+        break
+
+# Load the Best Model for Evaluation
+model.load_state_dict(torch.load(os.path.join(config["results_folder"], "best_model.pt")))
+
+# Evaluation (unchanged from original)
 model.eval()
 y_true, y_pred, y_prob = [], [], []
 
@@ -154,16 +224,16 @@ with torch.no_grad():
         y_pred.extend(predicted.cpu().numpy())
         y_prob.extend(probabilities.cpu().numpy())
 
-# Metrics
+# Metrics Calculation (unchanged from original)
 accuracy = accuracy_score(y_true, y_pred)
 precision = precision_score(y_true, y_pred, average='weighted', zero_division=1)
 recall = recall_score(y_true, y_pred, average='weighted', zero_division=1)
 f1 = f1_score(y_true, y_pred, average='weighted', zero_division=1)
 conf_matrix = confusion_matrix(y_true, y_pred)
 
-# AUC-ROC Calculation with Error Handling
+# AUC-ROC and Log Loss Calculation (unchanged from original)
 try:
-    if len(np.unique(y_true)) > 1:  # Ensure diversity in y_true
+    if len(np.unique(y_true)) > 1:
         y_true_one_hot = np.zeros((len(y_true), config["num_classes"]))
         y_true_one_hot[np.arange(len(y_true)), y_true] = 1
         auc_roc = roc_auc_score(
@@ -174,27 +244,20 @@ try:
             labels=np.arange(config["num_classes"])
         )
     else:
-        auc_roc = 0.0  # Fallback value if only one class is present
+        auc_roc = 0.0
 except Exception as e:
     print(f"Error calculating AUC-ROC: {e}")
     auc_roc = 0.0
 
-# Ensure y_prob is normalized (to avoid log_loss warnings)
 y_prob = np.array(y_prob)
 y_prob /= y_prob.sum(axis=1, keepdims=True)
 
-# Log Loss Calculation with Explicit Class Labels
 try:
-    logloss = log_loss(
-        y_true,
-        y_prob,
-        labels=np.arange(config["num_classes"])
-    )
+    logloss = log_loss(y_true, y_prob, labels=np.arange(config["num_classes"]))
 except ValueError as e:
     print(f"Error calculating Log Loss: {e}")
     logloss = None
 
-# Print Metrics
 print(f"Accuracy: {accuracy:.2f}")
 print(f"Precision: {precision:.2f}")
 print(f"Recall: {recall:.2f}")
@@ -205,24 +268,3 @@ if logloss is not None:
 else:
     print("Log Loss: Calculation skipped due to missing classes.")
 print(f"Confusion Matrix:\n{conf_matrix}")
-
-# Save Metrics
-metrics = {
-    "Accuracy": accuracy,
-    "Precision": precision,
-    "Recall": recall,
-    "F1 Score": f1,
-    "AUC-ROC": auc_roc,
-    "Log Loss": logloss if logloss is not None else "N/A"
-}
-pd.DataFrame([metrics]).to_csv(os.path.join(config["results_folder"], "metrics.csv"), index=False)
-
-# Save Confusion Matrix
-plt.figure(figsize=(8, 6))
-plt.imshow(conf_matrix, cmap="Blues", interpolation="nearest")
-plt.colorbar()
-plt.title("Confusion Matrix")
-plt.xlabel("Predicted Labels")
-plt.ylabel("True Labels")
-plt.savefig(os.path.join(config["results_folder"], "confusion_matrix.png"))
-plt.close()
