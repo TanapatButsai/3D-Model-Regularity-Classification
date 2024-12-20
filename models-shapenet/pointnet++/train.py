@@ -12,8 +12,8 @@ from sklearn.metrics import (accuracy_score, confusion_matrix, precision_score,
 
 # Configuration dictionary
 config = {
-    "num_samples": 7500,
-    "num_epochs": 50,
+    "num_samples": 20000,
+    "num_epochs": 70,
     "batch_size": 32,
     "num_points": 1024,
     "learning_rate": 0.001,
