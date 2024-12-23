@@ -4,7 +4,10 @@ import numpy as np
 import torch
 import torch.nn as nn
 import torch.optim as optim
-from sklearn.metrics import accuracy_score, confusion_matrix, ConfusionMatrixDisplay, precision_score, recall_score, f1_score, roc_auc_score, log_loss
+from sklearn.metrics import (
+    accuracy_score, confusion_matrix, ConfusionMatrixDisplay, precision_score,
+    recall_score, f1_score, roc_auc_score, log_loss
+)
 from sklearn.model_selection import train_test_split
 from tqdm import tqdm
 from torch.utils.data import DataLoader, Dataset
@@ -26,6 +29,38 @@ config = {
     "device": 'cuda' if torch.cuda.is_available() else 'cpu',
     "conf_matrix_path": "confusion_matrix.png",
 }
+
+# Early Stopping
+class EarlyStopping:
+    def __init__(self, patience=10, delta=0, path="checkpoint.pt", verbose=False):
+        self.patience = patience
+        self.delta = delta
+        self.path = path
+        self.verbose = verbose
+        self.counter = 0
+        self.best_loss = None
+        self.early_stop = False
+
+    def __call__(self, val_loss, model):
+        if self.best_loss is None:
+            self.best_loss = val_loss
+            self.save_checkpoint(model)
+        elif val_loss > self.best_loss - self.delta:
+            self.counter += 1
+            if self.verbose:
+                print(f"EarlyStopping counter: {self.counter}/{self.patience}")
+            if self.counter >= self.patience:
+                self.early_stop = True
+        else:
+            self.best_loss = val_loss
+            self.save_checkpoint(model)
+            self.counter = 0
+
+    def save_checkpoint(self, model):
+        """Save model when validation loss improves."""
+        if self.verbose:
+            print("Validation loss improved. Saving model...")
+        torch.save(model.state_dict(), self.path)
 
 # Data Augmentation
 def augment_mesh(vertices, normals):
@@ -119,6 +154,9 @@ criterion = nn.CrossEntropyLoss()
 optimizer = optim.AdamW(model.parameters(), lr=config["learning_rate"], weight_decay=config["weight_decay"])
 scheduler = optim.lr_scheduler.CosineAnnealingWarmRestarts(optimizer, T_0=10, T_mult=2)
 
+# Early Stopping
+early_stopping = EarlyStopping(patience=10, delta=0.01, path="best_model.pt", verbose=True)
+
 # Training Loop
 for epoch in range(config["num_epochs"]):
     model.train()
@@ -137,7 +175,16 @@ for epoch in range(config["num_epochs"]):
         running_loss += loss.item()
 
     scheduler.step()
-    print(f"Epoch {epoch+1}, Loss: {running_loss/len(train_loader):.4f}")
+    val_loss = running_loss / len(train_loader)
+    print(f"Epoch {epoch+1}, Validation Loss: {val_loss:.4f}")
+
+    early_stopping(val_loss, model)
+    if early_stopping.early_stop:
+        print("Early stopping triggered. Training halted.")
+        break
+
+# Load Best Model
+model.load_state_dict(torch.load("best_model.pt"))
 
 # Evaluation
 model.eval()
@@ -176,6 +223,7 @@ print(f"Log Loss: {logloss:.4f}")
 
 # Confusion Matrix
 conf_matrix = confusion_matrix(y_true, y_pred)
+print("Confusion Matrix:\n", conf_matrix)
 disp = ConfusionMatrixDisplay(confusion_matrix=conf_matrix)
 disp.plot(cmap=plt.cm.Blues)
 plt.title("Confusion Matrix")
