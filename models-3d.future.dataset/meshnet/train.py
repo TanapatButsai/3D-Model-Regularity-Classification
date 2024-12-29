@@ -21,7 +21,7 @@ config = {
     "label_file_path": 'datasets/3d-future-dataset/label/Final_Validated_Regularity_Levels.xlsx',
     "max_data_points": 10000,
     "num_points": 1024,
-    "batch_size": 32,
+    "batch_size": 32, 
     "num_classes": 4,
     "num_epochs": 100,
     "learning_rate": 0.0005,
